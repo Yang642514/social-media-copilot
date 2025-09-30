@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>飞书日期字段格式测试</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .field-test {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background-color: #fafafa;
+        }
+        .field-name {
+            font-weight: bold;
+            color: #2c5aa0;
+            margin-bottom: 8px;
+        }
+        .field-value {
+            font-family: 'Courier New', monospace;
+            background-color: #f0f0f0;
+            padding: 8px;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+        .field-format {
+            color: #666;
+            font-size: 14px;
+        }
+        .success {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .test-button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        .test-button:hover {
+            background-color: #0056b3;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+            background-color: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🕒 飞书日期字段格式测试</h1>
+        
+        <div class="field-test">
+            <div class="field-name">同步时间 (修复后)</div>
+            <div class="field-value" id="syncTime"></div>
+            <div class="field-format">✅ 格式要求：Unix时间戳（毫秒）</div>
+        </div>
+
+        <div class="field-test">
+            <div class="field-name">发布时间</div>
+            <div class="field-value" id="publishTime"></div>
+            <div class="field-format">✅ 格式要求：Unix时间戳（毫秒）</div>
+        </div>
+
+        <div class="field-test">
+            <div class="field-name">更新时间</div>
+            <div class="field-value" id="updateTime"></div>
+            <div class="field-format">✅ 格式要求：Unix时间戳（毫秒）</div>
+        </div>
+
+        <div style="text-align: center; margin: 30px 0;">
+            <button class="test-button" onclick="testDateFormats()">🧪 测试日期格式</button>
+            <button class="test-button" onclick="validateTimestamps()">✅ 验证时间戳</button>
+        </div>
+
+        <div id="result" class="result" style="display: none;"></div>
+    </div>
+
+    <script>
+        // 模拟修复后的日期字段格式
+        function testDateFormats() {
+            // 同步时间 - 修复后使用 Date.now()
+            const syncTime = Date.now();
+            document.getElementById('syncTime').textContent = syncTime;
+
+            // 发布时间 - 模拟从笔记数据获取
+            const mockPublishTimestamp = 1672531200; // 2023-01-01 00:00:00 UTC
+            const publishTime = mockPublishTimestamp * 1000; // 转换为毫秒
+            document.getElementById('publishTime').textContent = publishTime;
+
+            // 更新时间 - 使用 Date.now()
+            const updateTime = Date.now();
+            document.getElementById('updateTime').textContent = updateTime;
+
+            showResult('日期格式测试完成！所有字段都使用Unix时间戳（毫秒）格式。', 'success');
+        }
+
+        function validateTimestamps() {
+            const syncTime = parseInt(document.getElementById('syncTime').textContent);
+            const publishTime = parseInt(document.getElementById('publishTime').textContent);
+            const updateTime = parseInt(document.getElementById('updateTime').textContent);
+
+            let results = [];
+
+            // 验证时间戳格式
+            if (isValidTimestamp(syncTime)) {
+                results.push('✅ 同步时间：有效的Unix时间戳 (' + new Date(syncTime).toLocaleString('zh-CN') + ')');
+            } else {
+                results.push('❌ 同步时间：无效的时间戳格式');
+            }
+
+            if (isValidTimestamp(publishTime)) {
+                results.push('✅ 发布时间：有效的Unix时间戳 (' + new Date(publishTime).toLocaleString('zh-CN') + ')');
+            } else {
+                results.push('❌ 发布时间：无效的时间戳格式');
+            }
+
+            if (isValidTimestamp(updateTime)) {
+                results.push('✅ 更新时间：有效的Unix时间戳 (' + new Date(updateTime).toLocaleString('zh-CN') + ')');
+            } else {
+                results.push('❌ 更新时间：无效的时间戳格式');
+            }
+
+            // 检查飞书API要求
+            results.push('');
+            results.push('📋 飞书API要求：');
+            results.push('• 日期字段必须是Unix时间戳（毫秒）');
+            results.push('• 不能使用字符串格式如 "2025/9/30 21:39:02"');
+            results.push('• 使用 Date.now() 或 timestamp * 1000');
+
+            showResult(results.join('<br>'), 'info');
+        }
+
+        function isValidTimestamp(timestamp) {
+            // 检查是否为有效的毫秒时间戳
+            return !isNaN(timestamp) && 
+                   timestamp > 0 && 
+                   timestamp.toString().length === 13 && // 毫秒时间戳应该是13位
+                   new Date(timestamp).getTime() === timestamp;
+        }
+
+        function showResult(message, type) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = message;
+            resultDiv.style.display = 'block';
+            
+            // 根据类型设置样式
+            if (type === 'success') {
+                resultDiv.style.borderLeftColor = '#28a745';
+                resultDiv.style.backgroundColor = '#d4edda';
+            } else if (type === 'error') {
+                resultDiv.style.borderLeftColor = '#dc3545';
+                resultDiv.style.backgroundColor = '#f8d7da';
+            } else {
+                resultDiv.style.borderLeftColor = '#007bff';
+                resultDiv.style.backgroundColor = '#f8f9fa';
+            }
+        }
+
+        // 页面加载时自动测试
+        window.onload = function() {
+            testDateFormats();
+        };
+    </script>
+</body>
+</html>

@@ -4,17 +4,25 @@ import { defineContentScript } from 'wxt/sandbox';
 interface NoteData {
   title: string;
   author: string;
+  authorUrl?: string;        // 博主链接
+  authorXhsId?: string;      // 小红书号
+  authorBio?: string;        // 博主简介
   likes: number;
   comments: number;
   shares: number;
+  collections?: number;      // 收藏量
   publishTime: string;
   recommendLevel: 'high' | 'medium' | 'low';
   likeFollowRatio: number;
   followerCount: number;
+  likesAndCollections?: string; // 获赞与收藏
   noteScore: number;
-  images?: string[]; // 笔记图片URL数组
-  content?: string;  // 笔记文本内容
-  tags?: string[];   // 笔记标签数组
+  images?: string[];         // 笔记图片URL数组
+  content?: string;          // 笔记文本内容
+  tags?: string[];           // 笔记标签数组
+  topics?: string[];         // 笔记话题
+  noteType?: string;         // 笔记类型（图文/视频）
+  videoCover?: string;       // 视频封面
 }
 
 export default defineContentScript({
@@ -138,111 +146,68 @@ export default defineContentScript({
     }
 
     // 创建功能按钮组件
-    // 创建功能按钮容器（模仿小红书原生布局）
+    // 创建功能按钮容器（优化版本：快速加载，左上角排版）
     function createFunctionButtons(): HTMLElement {
       const buttonContainer = document.createElement('div');
       buttonContainer.className = 'xhs-helper-buttons';
       
-      // 模仿小红书原生按钮容器样式
+      // 按钮容器样式：水平排列，紧凑布局，左对齐
       buttonContainer.style.cssText = `
-        padding: 16px 24px;
-        padding-top: 0;
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        flex-wrap: wrap;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
         position: relative;
-        opacity: 0;
-        transform: translateY(10px);
-        transition: all 0.3s ease;
-        z-index: 1000;
+        display: flex;
+        flex-direction: row;
+        gap: 6px;
+        margin: 4px 0 6px 0;
+        z-index: 10000;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         box-sizing: border-box;
+        justify-content: flex-start;
+        align-items: center;
       `;
 
-      // 直接创建按钮（模仿小红书原生布局）
-      const loadActualContent = () => {
+      // 创建操作按钮的辅助函数
+      const createActionButton = (text: string, color: string, onClick: () => void) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = text;
+        
+        // 按钮样式：紧凑设计
+        button.style.cssText = `
+          background: ${color};
+          color: #fff;
+          border: none;
+          border-radius: 4px;
+          padding: 6px 10px;
+          font-size: 11px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: background-color 0.2s;
+          white-space: nowrap;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+          min-width: 70px;
+          text-align: center;
+          line-height: 1.2;
+        `;
 
-        // 创建操作按钮的辅助函数（模仿小红书原生按钮样式）
-        const createActionButton = (text: string, color: string, onClick: () => void) => {
-          const button = document.createElement('button');
-          button.type = 'button';
-          
-          // 创建按钮内容span
-          const span = document.createElement('span');
-          span.textContent = text;
-          button.appendChild(span);
-          
-          // 应用小红书原生按钮样式
-          button.className = 'smzs-btn css-1n2561v smzs-btn-primary smzs-btn-color-primary smzs-btn-variant-solid';
-          button.style.cssText = `
-            outline: none;
-            position: relative;
-            display: inline-flex;
-            gap: 8px;
-            align-items: center;
-            justify-content: center;
-            font-weight: 400;
-            white-space: nowrap;
-            text-align: center;
-            background-image: none;
-            background: ${color};
-            border: 1px solid transparent;
-            cursor: pointer;
-            transition: all 0.2s cubic-bezier(0.645, 0.045, 0.355, 1);
-            user-select: none;
-            touch-action: manipulation;
-            color: #fff;
-            font-size: 14px;
-            height: 32px;
-            padding: 0px 15px;
-            border-radius: 6px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-            box-sizing: border-box;
-          `;
-
-          // 悬停效果（模仿小红书原生效果）
-          button.addEventListener('mouseenter', () => {
-            button.style.background = color === '#3d61ff' ? '#6687ff' : 
-                                    color === '#52c41a' ? '#73d13d' : 
-                                    color === '#ff4d4f' ? '#ff7875' : color;
-          });
-
-          button.addEventListener('mouseleave', () => {
-            button.style.background = color;
-          });
-
-          // 点击效果
-          button.addEventListener('mousedown', () => {
-            button.style.background = color === '#3d61ff' ? '#2944d9' : 
-                                    color === '#52c41a' ? '#389e0d' : 
-                                    color === '#ff4d4f' ? '#d9363e' : color;
-          });
-
-          button.addEventListener('mouseup', () => {
-            button.style.background = color;
-          });
-
-          button.addEventListener('click', onClick);
-          return button;
-        };
-
-        // 直接创建功能按钮
-        const syncButton = createActionButton('同步飞书', '#3d61ff', handleSyncNote);
-        const copyButton = createActionButton('复制笔记信息', '#52c41a', handleCopyNote);
-
-        buttonContainer.appendChild(syncButton);
-        buttonContainer.appendChild(copyButton);
-
-        // 渐进式显示动画
-        requestAnimationFrame(() => {
-          buttonContainer.style.opacity = '1';
-          buttonContainer.style.transform = 'translateY(0)';
+        // 悬停效果
+        button.addEventListener('mouseenter', () => {
+          button.style.opacity = '0.8';
         });
+
+        button.addEventListener('mouseleave', () => {
+          button.style.opacity = '1';
+        });
+
+        button.addEventListener('click', onClick);
+        return button;
       };
 
-      // 立即加载按钮
-      loadActualContent();
+      // 按照要求的顺序创建按钮：复制笔记、同步飞书
+      const copyButton = createActionButton('复制笔记', '#52c41a', handleCopyNote);
+      const syncButton = createActionButton('同步飞书', '#3d61ff', handleSyncNote);
+
+      buttonContainer.appendChild(copyButton);
+      buttonContainer.appendChild(syncButton);
 
       return buttonContainer;
     }
@@ -307,6 +272,24 @@ export default defineContentScript({
                        document.querySelector('.author-info .name') ||
                        document.querySelector('.username');
       const author = authorElement?.textContent?.trim() || '未知作者';
+
+      // 获取作者链接
+      const authorLinkElement = document.querySelector('.user-name a') ||
+                           document.querySelector('.author-info a') ||
+                           document.querySelector('[data-testid="author-link"]');
+      const authorUrl = authorLinkElement?.getAttribute('href') || '';
+
+      // 获取小红书号
+      const xhsIdElement = document.querySelector('.user-id') ||
+                      document.querySelector('.red-id') ||
+                      document.querySelector('[data-testid="user-id"]');
+      const authorXhsId = xhsIdElement?.textContent?.trim() || '';
+
+      // 获取博主简介
+      const bioElement = document.querySelector('.user-desc') ||
+                     document.querySelector('.author-bio') ||
+                     document.querySelector('[data-testid="author-bio"]');
+      const authorBio = bioElement?.textContent?.trim() || '';
     
       // 获取互动数据
       const likeElement = document.querySelector('.like-count') ||
@@ -326,19 +309,46 @@ export default defineContentScript({
                       document.querySelector('.engagement-count:nth-child(3)') ||
                       document.querySelector('.interact-count .share');
       const shares = parseNumber(shareElement?.textContent || '0');
+
+      // 获取收藏数
+      const collectElement = document.querySelector('.collect-count') ||
+                        document.querySelector('[data-testid="collect-count"]') ||
+                        document.querySelector('.bookmark-count');
+      const collections = parseNumber(collectElement?.textContent || '0');
     
       // 获取发布时间
       const timeElement = document.querySelector('.publish-time') ||
                      document.querySelector('[data-testid="publish-time"]') ||
                      document.querySelector('.time') ||
                      document.querySelector('.date');
-      const publishTime = timeElement?.textContent?.trim() || new Date().toLocaleDateString();
+      const timeText = timeElement?.textContent?.trim() || '';
+      // 将相对时间转换为Unix时间戳，然后转换为字符串
+      const publishTime = parseRelativeTime(timeText).toString();
     
-      // 获取作者粉丝数（需要进入作者页面或从现有信息推断）
+      // 获取作者粉丝数
       const followerElement = document.querySelector('.follower-count') ||
                          document.querySelector('[data-testid="follower-count"]') ||
                          document.querySelector('.fans-count');
       const followerCount = parseNumber(followerElement?.textContent || '0');
+
+      // 获取获赞与收藏数
+      const likesAndCollectionsElement = document.querySelector('.total-likes') ||
+                                    document.querySelector('[data-testid="total-engagement"]');
+      const likesAndCollections = likesAndCollectionsElement?.textContent?.trim() || '';
+
+      // 获取笔记话题
+      const topicElements = document.querySelectorAll('.topic') ||
+                       document.querySelectorAll('[data-testid="topic"]') ||
+                       document.querySelectorAll('.hashtag');
+      const topics = Array.from(topicElements).map(el => el.textContent?.trim()).filter(Boolean);
+
+      // 判断笔记类型
+      const hasVideo = document.querySelector('video') || document.querySelector('.video-container');
+      const noteType = hasVideo ? '视频' : '图文';
+
+      // 获取视频封面
+      const videoCoverElement = document.querySelector('video') as HTMLVideoElement;
+      const videoCover = videoCoverElement?.poster || '';
     
       // 计算赞粉比（点赞数/粉丝数）
       const likeFollowRatio = followerCount > 0 ? Number((likes / followerCount).toFixed(4)) : 0;
@@ -361,17 +371,25 @@ export default defineContentScript({
       return {
         title,
         author,
+        authorUrl,
+        authorXhsId,
+        authorBio,
         likes,
         comments,
         shares,
+        collections,
         publishTime,
         recommendLevel: 'medium', // 默认值，用户可以修改
         likeFollowRatio,
         followerCount,
+        likesAndCollections,
         noteScore,
         images,
         content,
-        tags
+        tags,
+        topics,
+        noteType,
+        videoCover
       };
     }
 
@@ -534,6 +552,103 @@ export default defineContentScript({
       return Math.round(num);
     }
 
+    // 解析相对时间并转换为Unix时间戳
+    function parseRelativeTime(timeText: string): number {
+      if (!timeText) {
+        return Math.floor(Date.now() / 1000); // 返回当前时间的Unix时间戳
+      }
+
+      const now = new Date();
+      const currentTimestamp = Math.floor(now.getTime() / 1000);
+
+      // 清理时间文本，移除地理位置信息
+      const cleanTimeText = timeText.replace(/\s*[^\d\u4e00-\u9fa5]+$/, '').trim();
+      
+      // 匹配各种相对时间格式
+      const patterns = [
+        { regex: /(\d+)\s*秒前/, unit: 'seconds' },
+        { regex: /(\d+)\s*分钟前/, unit: 'minutes' },
+        { regex: /(\d+)\s*小时前/, unit: 'hours' },
+        { regex: /(\d+)\s*天前/, unit: 'days' },
+        { regex: /(\d+)\s*周前/, unit: 'weeks' },
+        { regex: /(\d+)\s*月前/, unit: 'months' },
+        { regex: /(\d+)\s*年前/, unit: 'years' },
+        { regex: /刚刚/, unit: 'now' },
+        { regex: /今天/, unit: 'today' },
+        { regex: /昨天/, unit: 'yesterday' }
+      ];
+
+      for (const pattern of patterns) {
+        const match = cleanTimeText.match(pattern.regex);
+        if (match) {
+          const value = match[1] ? parseInt(match[1]) : 0;
+          
+          switch (pattern.unit) {
+            case 'now':
+              return currentTimestamp;
+            case 'seconds':
+              return currentTimestamp - (value * 1);
+            case 'minutes':
+              return currentTimestamp - (value * 60);
+            case 'hours':
+              return currentTimestamp - (value * 3600);
+            case 'days':
+              return currentTimestamp - (value * 86400);
+            case 'weeks':
+              return currentTimestamp - (value * 604800);
+            case 'months':
+              return currentTimestamp - (value * 2592000); // 30天
+            case 'years':
+              return currentTimestamp - (value * 31536000); // 365天
+            case 'today':
+              // 设置为今天的开始时间
+              const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+              return Math.floor(today.getTime() / 1000);
+            case 'yesterday':
+              // 设置为昨天的开始时间
+              const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+              return Math.floor(yesterday.getTime() / 1000);
+          }
+        }
+      }
+
+      // 如果无法解析，尝试解析具体日期格式
+      try {
+        // 尝试解析常见的日期格式
+        const dateFormats = [
+          /(\d{4})-(\d{1,2})-(\d{1,2})/, // YYYY-MM-DD
+          /(\d{1,2})-(\d{1,2})/, // MM-DD (当年)
+          /(\d{1,2})月(\d{1,2})日/ // MM月DD日
+        ];
+
+        for (const format of dateFormats) {
+          const match = cleanTimeText.match(format);
+          if (match) {
+            let year = now.getFullYear();
+            let month, day;
+
+            if (match.length === 4) { // YYYY-MM-DD
+              year = parseInt(match[1]);
+              month = parseInt(match[2]) - 1;
+              day = parseInt(match[3]);
+            } else if (match.length === 3) { // MM-DD 或 MM月DD日
+              month = parseInt(match[1]) - 1;
+              day = parseInt(match[2]);
+            }
+
+            const date = new Date(year, month, day);
+            return Math.floor(date.getTime() / 1000);
+          }
+        }
+      } catch (error) {
+        console.warn('解析日期时出错:', error);
+      }
+
+      // 如果都无法解析，返回当前时间
+      console.warn('无法解析时间格式:', timeText, '使用当前时间');
+      return currentTimestamp;
+    }
+
     // 计算笔记评分（0-100分）
     function calculateNoteScore(likes: number, comments: number, shares: number, followerCount: number): number {
       // 基础互动分数（40分）
@@ -640,13 +755,25 @@ export default defineContentScript({
         const response = await safeRuntimeSendMessage({
           action: 'syncToFeishu',
           data: dataWithRecommend,
-          config: config
+          config: config,
+          currentUrl: window.location.href
         });
         
         if (response && response.success) {
           showMessage('笔记同步成功！', 'success');
         } else {
-          showMessage(`同步失败: ${response?.error || '未知错误'}`, 'error');
+          // 确保错误信息正确显示
+          let errorMessage = '未知错误';
+          if (response?.error) {
+            if (typeof response.error === 'string') {
+              errorMessage = response.error;
+            } else if (typeof response.error === 'object') {
+              errorMessage = JSON.stringify(response.error);
+            } else {
+              errorMessage = String(response.error);
+            }
+          }
+          showMessage(`同步失败: ${errorMessage}`, 'error');
         }
       } catch (error) {
         console.error('同步笔记时出错:', error);
@@ -859,59 +986,58 @@ export default defineContentScript({
         return false;
       }
 
-      console.log('🔍 [DEBUG] 开始查找插入位置...');
+      console.log('🔍 [DEBUG] 开始查找标题元素...');
       
-      // 查找合适的插入位置（基于实际案例优化选择器）
-      const selectors = [
-        // 优先查找按钮容器区域（基于实际案例）
-        '.p-4.xl\\:p-6',                    // 实际案例中的按钮容器
-        'div[class*="p-4"][class*="xl:p-6"]', // 更宽泛的匹配
-        'div[class*="flex"][class*="gap-3"]', // 按钮布局容器
-        '.note-content',                     // 笔记内容区域
-        '.note-detail',                      // 笔记详情区域
-        '.note-scroller',                    // 笔记滚动容器
-        '.note-item',                        // 笔记项目
-        '[data-v-] .note-content',          // Vue组件中的笔记内容
-        '[data-v-] .note-detail'            // Vue组件中的笔记详情
+      // 查找标题元素
+      const titleSelectors = [
+        '#detail-title',
+        '[data-testid="note-title"]',
+        '.note-detail-title',
+        'h1',
+        'h2',
+        'div[class*="title"]'
       ];
 
-      let insertTarget: Element | null = null;
+      let titleElement: Element | null = null;
       
-      for (const selector of selectors) {
-        console.log(`🔍 [DEBUG] 尝试选择器: ${selector}`);
-        const elements = document.querySelectorAll(selector);
-        console.log(`🔍 [DEBUG] 找到 ${elements.length} 个元素`);
-        
-        for (const element of elements) {
-          console.log(`🔍 [DEBUG] 检查元素:`, element, `可见性: ${element.offsetHeight}x${element.offsetWidth}`);
-          // 检查元素是否可见且有内容
-          if (element.offsetHeight > 0 && element.offsetWidth > 0) {
-            insertTarget = element;
-            console.log(`✅ 找到内容容器: ${selector}`, element);
-            break;
-          }
+      for (const selector of titleSelectors) {
+        console.log(`🔍 [DEBUG] 尝试标题选择器: ${selector}`);
+        const element = document.querySelector(selector);
+        if (element && element.offsetHeight > 0 && element.offsetWidth > 0) {
+          titleElement = element;
+          console.log(`✅ 找到标题元素: ${selector}`, element);
+          break;
         }
-        if (insertTarget) break;
       }
       
-      console.log('🔍 [DEBUG] 最终插入目标:', insertTarget);
-
-      if (insertTarget) {
+      if (titleElement) {
+        console.log('🔍 [DEBUG] 找到标题，在标题上方插入按钮');
+        
         const functionButtons = createFunctionButtons();
         
         // 应用防检测机制
         const randomClass = antiDetection.generateRandomClass();
         functionButtons.className = `xhs-helper-buttons ${randomClass}`;
         
-        // 随机化样式
+        // 设置按钮样式：在标题上方，水平排列，紧凑布局
+        functionButtons.style.cssText = `
+          position: relative;
+          display: flex;
+          flex-direction: row;
+          gap: 6px;
+          margin: 4px 0 6px 0;
+          z-index: 1000;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          box-sizing: border-box;
+          justify-content: flex-start;
+          align-items: center;
+        `;
+        
+        // 随机化样式（但保持基本布局）
         antiDetection.randomizeStyles(functionButtons);
         
-        // 插入到容器的开头
-        if (insertTarget.firstChild) {
-          insertTarget.insertBefore(functionButtons, insertTarget.firstChild);
-        } else {
-          insertTarget.appendChild(functionButtons);
-        }
+        // 在标题前插入按钮
+        titleElement.parentNode?.insertBefore(functionButtons, titleElement);
         
         // 模拟自然的加载过程
         setTimeout(() => {
@@ -925,30 +1051,44 @@ export default defineContentScript({
           antiDetection.simulateMouseMovement(functionButtons);
         }, antiDetection.randomDelay(200, 500));
 
-        console.log('✅ 功能按钮已添加到笔记详情页', insertTarget);
+        console.log('✅ 功能按钮已添加到标题上方', titleElement);
         return true;
       } else {
-        console.log('⚠️ 未找到合适的插入位置，尝试更多备用位置');
+        console.log('⚠️ 未找到标题元素，尝试其他插入位置');
         
-        // 备用方案：尝试更多可能的插入位置
-        const backupSelectors = [
+        // 备用方案：查找合适的内容容器
+        const contentSelectors = [
+          '.note-content',
+          '.note-detail',
+          '.note-scroller',
+          '.note-item',
+          '[data-v-] .note-content',
+          '[data-v-] .note-detail',
           'main',
           '.container',
-          '.content',
-          '.page-container',
-          '.app',
-          '#app',
-          '.layout',
-          'body > div:first-child',
-          'body > div:nth-child(2)'
+          '.content'
         ];
         
-        for (const selector of backupSelectors) {
+        for (const selector of contentSelectors) {
           const element = document.querySelector(selector);
           if (element && element.offsetHeight > 0) {
             const functionButtons = createFunctionButtons();
             const randomClass = antiDetection.generateRandomClass();
             functionButtons.className = `xhs-helper-buttons ${randomClass}`;
+            
+            // 设置按钮样式：在容器顶部，水平排列，紧凑布局
+            functionButtons.style.cssText = `
+              position: relative;
+              display: flex;
+              flex-direction: row;
+              gap: 6px;
+              margin: 4px 0 6px 0;
+              z-index: 1000;
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+              box-sizing: border-box;
+              justify-content: flex-start;
+              align-items: center;
+            `;
             
             // 应用防检测机制
             antiDetection.randomizeStyles(functionButtons);

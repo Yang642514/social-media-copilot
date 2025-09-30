@@ -10,16 +10,35 @@ interface FeishuConfig {
   syncMode: 'append' | 'overwrite' | 'merge';
   uploadFiles: boolean;
   syncFields: {
-    title: boolean;
-    author: boolean;
+    // 笔记信息
+    noteId: boolean;
+    noteUrl: boolean;
+    noteType: boolean;
+    noteTitle: boolean;
+    noteContent: boolean;
+    noteTopic: boolean;
     likes: boolean;
+    collections: boolean;
     comments: boolean;
     shares: boolean;
     publishTime: boolean;
-    recommendLevel: boolean;
-    likeFollowRatio: boolean;
+    updateTime: boolean;
+    ipAddress: boolean;
+    
+    // 博主信息
+    authorId: boolean;
+    authorUrl: boolean;
+    authorName: boolean;
+    authorXhsId: boolean;
     followerCount: boolean;
-    noteScore: boolean;
+    likesAndCollections: boolean;
+    authorBio: boolean;
+    
+    // 其他
+    imageCount: boolean;
+    noteImages: boolean;
+    videoCover: boolean;
+    videoFile: boolean;
   };
 }
 
@@ -37,6 +56,52 @@ const RECOMMEND_LEVELS = [
   { value: 'low', label: '低', color: 'bg-red-500' }
 ];
 
+// 字段分类配置
+const FIELD_CATEGORIES = {
+  noteInfo: {
+    label: '笔记信息',
+    icon: '📝',
+    fields: {
+      noteId: '笔记ID',
+      noteUrl: '笔记链接',
+      noteType: '笔记类型',
+      noteTitle: '笔记标题',
+      noteContent: '笔记内容',
+      noteTopic: '笔记话题',
+      likes: '点赞量',
+      collections: '收藏量',
+      comments: '评论量',
+      shares: '分享量',
+      publishTime: '发布时间',
+      updateTime: '更新时间',
+      ipAddress: 'IP地址',
+    }
+  },
+  authorInfo: {
+    label: '博主信息',
+    icon: '👤',
+    fields: {
+      authorId: '博主ID',
+      authorUrl: '博主链接',
+      authorName: '博主昵称',
+      authorXhsId: '小红书号',
+      followerCount: '粉丝数',
+      likesAndCollections: '获赞与收藏',
+      authorBio: '博主简介',
+    }
+  },
+  other: {
+    label: '其他',
+    icon: '📎',
+    fields: {
+      imageCount: '图片数量',
+      noteImages: '笔记图片',
+      videoCover: '视频封面',
+      videoFile: '视频文件',
+    }
+  }
+};
+
 function App() {
   const [config, setConfig] = useState<FeishuConfig>({
     appId: '',
@@ -45,16 +110,35 @@ function App() {
     syncMode: 'append',
     uploadFiles: false,
     syncFields: {
-      title: true,
-      author: true,
+      // 笔记信息 - 默认选中常用字段
+      noteId: true,
+      noteUrl: true,
+      noteType: false,
+      noteTitle: true,
+      noteContent: true,
+      noteTopic: false,
       likes: true,
+      collections: true,
       comments: true,
       shares: true,
       publishTime: true,
-      recommendLevel: true,
-      likeFollowRatio: true,
+      updateTime: false,
+      ipAddress: false,
+      
+      // 博主信息 - 默认选中基础字段
+      authorId: true,
+      authorUrl: false,
+      authorName: true,
+      authorXhsId: false,
       followerCount: true,
-      noteScore: true,
+      likesAndCollections: false,
+      authorBio: false,
+      
+      // 其他 - 默认不选中
+      imageCount: false,
+      noteImages: false,
+      videoCover: false,
+      videoFile: false,
     }
   });
 
@@ -63,6 +147,11 @@ function App() {
   const [isValidating, setIsValidating] = useState(false);
   const [showSyncDialog, setShowSyncDialog] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
+  const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
+    noteInfo: false,
+    authorInfo: false,
+    other: false
+  });
 
   // 从存储中加载配置
   useEffect(() => {
@@ -161,13 +250,110 @@ function App() {
     }
   };
 
+  // 更新表格元数据
+  const handleUpdateTable = async () => {
+    if (!config.appId || !config.appSecret) {
+      setMessage({ type: 'error', text: '请先填写App ID和App Secret' });
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+
+    if (!config.tableUrl || !validateTableUrl(config.tableUrl)) {
+      setMessage({ type: 'error', text: '请输入有效的飞书多维表格链接' });
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+
+    // 弹出更新选项对话框
+    const tableName = prompt('请输入新的表格名称（留空则不修改）:');
+    const isAdvancedStr = prompt('是否开启高级权限？输入 "true" 开启，"false" 关闭，留空则不修改:');
+    
+    let isAdvanced: boolean | undefined;
+    if (isAdvancedStr === 'true') {
+      isAdvanced = true;
+    } else if (isAdvancedStr === 'false') {
+      isAdvanced = false;
+    }
+
+    // 如果用户没有输入任何更新内容，则取消操作
+    if (!tableName && isAdvancedStr === null) {
+      return;
+    }
+
+    setMessage({ type: 'info', text: '正在更新多维表格...' });
+    
+    try {
+      // 发送消息到background script更新表格
+      const response = await chrome.runtime.sendMessage({
+        action: 'updateFeishuTable',
+        config: {
+          appId: config.appId,
+          appSecret: config.appSecret,
+          tableUrl: config.tableUrl
+        },
+        updateData: {
+          name: tableName || undefined,
+          isAdvanced: isAdvanced
+        }
+      });
+      
+      if (response.success) {
+        setMessage({ type: 'success', text: '表格更新成功！' });
+        setTimeout(() => setMessage(null), 3000);
+      } else {
+        setMessage({ type: 'error', text: response.error || '更新表格失败，请重试' });
+        setTimeout(() => setMessage(null), 3000);
+      }
+    } catch (error) {
+      console.error('更新表格时出错:', error);
+      setMessage({ type: 'error', text: '更新表格失败，请检查网络连接' });
+      setTimeout(() => setMessage(null), 3000);
+    }
+  };
+
   // 更新字段配置
   const handleFieldToggle = (field: keyof FeishuConfig['syncFields']) => {
+    // 笔记ID字段不允许修改，始终保持选中状态
+    if (field === 'noteId') {
+      return;
+    }
+    
     setConfig(prev => ({
       ...prev,
       syncFields: {
         ...prev.syncFields,
         [field]: !prev.syncFields[field]
+      }
+    }));
+  };
+
+  // 切换类目展开状态
+  const toggleCategory = (categoryKey: string) => {
+    setExpandedCategories(prev => ({
+      ...prev,
+      [categoryKey]: !prev[categoryKey]
+    }));
+  };
+
+  // 全选/取消全选某个类目
+  const toggleCategoryAll = (categoryKey: keyof typeof FIELD_CATEGORIES, selectAll: boolean) => {
+    const category = FIELD_CATEGORIES[categoryKey];
+    const updates: Partial<FeishuConfig['syncFields']> = {};
+    
+    Object.keys(category.fields).forEach(fieldKey => {
+      // 笔记ID字段始终保持选中状态，不受全选/取消全选影响
+      if (fieldKey === 'noteId') {
+        updates[fieldKey as keyof FeishuConfig['syncFields']] = true;
+      } else {
+        updates[fieldKey as keyof FeishuConfig['syncFields']] = selectAll;
+      }
+    });
+
+    setConfig(prev => ({
+      ...prev,
+      syncFields: {
+        ...prev.syncFields,
+        ...updates
       }
     }));
   };
@@ -305,37 +491,112 @@ function App() {
               {isSaving ? '保存中...' : '保存配置'}
             </button>
           </div>
+          
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={handleCreateTable}
+              className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 transition-colors"
+            >
+              创建新表格
+            </button>
+            <button
+              onClick={handleUpdateTable}
+              disabled={!config.tableUrl || !validateTableUrl(config.tableUrl)}
+              className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title={!config.tableUrl || !validateTableUrl(config.tableUrl) ? '请先输入有效的表格链接' : '更新表格元数据'}
+            >
+              更新表格
+            </button>
+          </div>
         </div>
 
         {/* 同步字段配置 */}
         <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
           <h2 className="text-md font-medium text-gray-900 mb-4">同步字段配置</h2>
           
-          <div className="grid grid-cols-2 gap-3">
-            {Object.entries(config.syncFields).map(([field, enabled]) => {
-              const fieldLabels: Record<string, string> = {
-                title: '标题',
-                author: '作者',
-                likes: '点赞数',
-                comments: '评论数',
-                shares: '分享数',
-                publishTime: '发布时间',
-                recommendLevel: '推荐程度',
-                likeFollowRatio: '赞粉比',
-                followerCount: '粉丝量',
-                noteScore: '笔记评分'
-              };
+          <div className="space-y-3">
+            {Object.entries(FIELD_CATEGORIES).map(([categoryKey, category]) => {
+              const isExpanded = expandedCategories[categoryKey];
+              const categoryFields = Object.keys(category.fields);
+              const selectedCount = categoryFields.filter(field => 
+                config.syncFields[field as keyof FeishuConfig['syncFields']]
+              ).length;
+              const totalCount = categoryFields.length;
+              const allSelected = selectedCount === totalCount;
+              const someSelected = selectedCount > 0 && selectedCount < totalCount;
 
               return (
-                <label key={field} className="flex items-center space-x-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={() => handleFieldToggle(field as keyof FeishuConfig['syncFields'])}
-                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-                  />
-                  <span className="text-sm text-gray-700">{fieldLabels[field]}</span>
-                </label>
+                <div key={categoryKey} className="border border-gray-200 rounded-lg">
+                  {/* 类目头部 */}
+                  <div 
+                    className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-50 transition-colors"
+                    onClick={() => toggleCategory(categoryKey)}
+                  >
+                    <div className="flex items-center space-x-3">
+                      <span className="text-lg">{category.icon}</span>
+                      <span className="font-medium text-gray-900">{category.label}</span>
+                      <span className="text-sm text-gray-500">
+                        ({selectedCount}/{totalCount})
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      {/* 全选/取消全选按钮 */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCategoryAll(categoryKey as keyof typeof FIELD_CATEGORIES, !allSelected);
+                        }}
+                        className={`text-xs px-2 py-1 rounded transition-colors ${
+                          allSelected 
+                            ? 'bg-red-100 text-red-700 hover:bg-red-200' 
+                            : 'bg-blue-100 text-blue-700 hover:bg-blue-200'
+                        }`}
+                      >
+                        {allSelected ? '取消全选' : '全选'}
+                      </button>
+                      {/* 展开/收起图标 */}
+                      <svg 
+                        className={`w-5 h-5 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                        fill="none" 
+                        stroke="currentColor" 
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                  </div>
+
+                  {/* 字段列表 */}
+                  {isExpanded && (
+                    <div className="border-t border-gray-200 p-3 bg-gray-50">
+                      <div className="grid grid-cols-2 gap-2">
+                        {Object.entries(category.fields).map(([fieldKey, fieldLabel]) => {
+                          const isEnabled = config.syncFields[fieldKey as keyof FeishuConfig['syncFields']];
+                          const isNoteId = fieldKey === 'noteId';
+                          const isDisabled = isNoteId; // 笔记ID不可修改
+                          
+                          return (
+                            <label key={fieldKey} className={`flex items-center space-x-2 ${isDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <input
+                                type="checkbox"
+                                checked={isNoteId ? true : isEnabled} // 笔记ID始终选中
+                                onChange={isDisabled ? undefined : () => handleFieldToggle(fieldKey as keyof FeishuConfig['syncFields'])}
+                                disabled={isDisabled}
+                                className={`w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 ${
+                                  isDisabled ? 'opacity-50 cursor-not-allowed' : ''
+                                }`}
+                              />
+                              <span className={`text-sm ${isDisabled ? 'text-gray-500' : 'text-gray-700'}`}>
+                                {fieldLabel}
+                                {isNoteId && <span className="text-xs text-blue-600 ml-1">(必选)</span>}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -410,21 +671,29 @@ function App() {
               </div>
               <div className="text-sm">
                 <span className="text-gray-600">同步字段：</span>
-                <div className="mt-1 flex flex-wrap gap-1">
-                  {Object.entries(config.syncFields)
-                    .filter(([_, enabled]) => enabled)
-                    .map(([field, _]) => {
-                      const fieldLabels: Record<string, string> = {
-                        title: '标题', author: '作者', likes: '点赞数', comments: '评论数',
-                        shares: '分享数', publishTime: '发布时间', recommendLevel: '推荐程度',
-                        likeFollowRatio: '赞粉比', followerCount: '粉丝量', noteScore: '笔记评分'
-                      };
-                      return (
-                        <span key={field} className="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
-                          {fieldLabels[field]}
-                        </span>
-                      );
-                    })}
+                <div className="mt-1 space-y-2">
+                  {Object.entries(FIELD_CATEGORIES).map(([categoryKey, category]) => {
+                    const selectedFields = Object.entries(category.fields).filter(([fieldKey, _]) => 
+                      config.syncFields[fieldKey as keyof FeishuConfig['syncFields']]
+                    );
+                    
+                    if (selectedFields.length === 0) return null;
+                    
+                    return (
+                      <div key={categoryKey}>
+                        <div className="text-xs text-gray-500 mb-1">
+                          {category.icon} {category.label}
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedFields.map(([fieldKey, fieldLabel]) => (
+                            <span key={fieldKey} className="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded">
+                              {fieldLabel}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
