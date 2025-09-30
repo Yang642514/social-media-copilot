@@ -6,13 +6,26 @@
 interface NoteData {
   title: string;
   author: string;
+  authorUrl?: string;        // 博主链接
+  authorBio?: string;        // 博主简介
   likes: number;
   comments: number;
   shares: number;
+  collections?: number;      // 收藏量
   publishTime: string;
+  recommendLevel?: 'high' | 'medium' | 'low';
+  likeFollowRatio?: number;
   followerCount: number;
-  images?: string[]; // 图片URL数组
-  content?: string; // 笔记内容
+  likesAndCollections?: string; // 获赞与收藏
+  noteScore?: number;
+  images?: string[];         // 笔记图片URL数组
+  content?: string;          // 笔记文本内容
+  tags?: string[];           // 笔记标签数组
+  topics?: string[];         // 笔记话题
+  noteType?: string;         // 笔记类型（图文/视频）
+  videoCover?: string;       // 视频封面
+  noteUrl?: string;          // 笔记链接
+  updateTime?: string;       // 更新时间
 }
 
 // 飞书配置接口
@@ -36,20 +49,15 @@ interface FeishuConfig {
     shares: boolean;
     publishTime: boolean;
     updateTime: boolean;
-    ipAddress: boolean;
     
     // 博主信息
-    authorId: boolean;
     authorUrl: boolean;
     authorName: boolean;
-    authorXhsId: boolean;
     followerCount: boolean;
     likesAndCollections: boolean;
     authorBio: boolean;
     
     // 其他
-    imageCount: boolean;
-    noteImages: boolean;
     videoCover: boolean;
     videoFile: boolean;
   };
@@ -115,9 +123,11 @@ export default defineBackground(() => {
     }
   });
 
-  // 验证飞书表格链接
-  function validateFeishuTableUrl(url: string): { isValid: boolean; appToken?: string; tableId?: string } {
-    // 支持多种飞书表格链接格式
+
+
+// 验证飞书表格链接
+function validateFeishuTableUrl(url: string): { isValid: boolean; appToken?: string; tableId?: string; error?: string } {
+  // 支持多种飞书表格链接格式
     const patterns = [
       /https:\/\/[^.]+\.feishu\.cn\/base\/([A-Za-z0-9]+).*table=([A-Za-z0-9]+)/,
       /https:\/\/[^.]+\.feishu\.cn\/sheets\/([A-Za-z0-9]+).*table=([A-Za-z0-9]+)/,
@@ -191,7 +201,7 @@ export default defineBackground(() => {
       }
 
       // 准备同步数据
-      const syncData = prepareSyncData(noteData, config.syncFields, currentUrl);
+      const syncData = await prepareSyncData(noteData, config.syncFields, currentUrl);
 
       // 检查并创建缺失的字段
       const requiredFields = Object.keys(syncData);
@@ -585,7 +595,7 @@ export default defineBackground(() => {
   }
 
   // 准备同步数据
-  function prepareSyncData(noteData: NoteData, syncFields: FeishuConfig['syncFields'], currentUrl: string): Record<string, any> {
+  async function prepareSyncData(noteData: NoteData, syncFields: FeishuConfig['syncFields'], currentUrl: string): Promise<Record<string, any>> {
     const data: Record<string, any> = {};
 
     // 笔记ID作为第一列索引，始终包含（即使用户未选择）
@@ -607,41 +617,67 @@ export default defineBackground(() => {
     data['笔记ID'] = noteId;
 
     // 笔记信息（按顺序添加）
-    if (syncFields.noteUrl) data['笔记链接'] = {
-      text: noteData.title || '小红书笔记',
-      link: currentUrl
-    };
+    if (syncFields.noteUrl) {
+      const noteUrl = noteData.noteUrl || currentUrl;
+      data['笔记链接'] = {
+        link: noteUrl,
+        text: noteData.title || '查看笔记'
+      };
+    }
     if (syncFields.noteType) data['笔记类型'] = noteData.noteType || '图文';
     if (syncFields.noteTitle) data['笔记标题'] = noteData.title;
     if (syncFields.noteContent) data['笔记内容'] = noteData.content || '';
     if (syncFields.noteTopic) data['笔记话题'] = noteData.topics || [];
-    if (syncFields.likes) data['点赞量'] = parseInt(noteData.likes) || 0;
-    if (syncFields.collections) data['收藏量'] = parseInt(noteData.collections) || 0;
-    if (syncFields.comments) data['评论量'] = parseInt(noteData.comments) || 0;
-    if (syncFields.shares) data['分享量'] = parseInt(noteData.shares) || 0;
+    if (syncFields.likes) data['点赞量'] = noteData.likes || 0;
+    if (syncFields.collections) data['收藏量'] = noteData.collections || 0;
+    if (syncFields.comments) data['评论量'] = noteData.comments || 0;
+    if (syncFields.shares) data['分享量'] = noteData.shares || 0;
     if (syncFields.publishTime) {
       // 发布时间改为日期格式（毫秒时间戳）
-      const timestamp = parseInt(noteData.publishTime);
+      const timestamp = parseInt(noteData.publishTime || '0');
       data['发布时间'] = isNaN(timestamp) ? Date.now() : timestamp * 1000;
     }
-    if (syncFields.updateTime) data['更新时间'] = Date.now(); // 日期格式（毫秒时间戳）
-    if (syncFields.ipAddress) data['IP地址'] = ''; // 客户端无法获取真实IP
+    if (syncFields.updateTime) {
+      // 更新时间改为使用从页面获取的真实更新时间（毫秒时间戳）
+      const updateTimestamp = parseInt(noteData.updateTime || '0');
+        // 只有当有有效的更新时间时才设置，否则留空
+        if (!isNaN(updateTimestamp) && updateTimestamp > 0) {
+          data['更新时间'] = updateTimestamp * 1000;
+        } else {
+          // 如果没有有效的更新时间，尝试使用发布时间
+          const publishTimestamp = parseInt(noteData.publishTime || '0');
+          if (!isNaN(publishTimestamp) && publishTimestamp > 0) {
+            data['更新时间'] = publishTimestamp * 1000;
+          } else {
+            // 如果都没有，留空而不是使用当前时间
+            data['更新时间'] = '';
+          }
+        }
+    }
+    
+
 
     // 博主信息
-    if (syncFields.authorId) data['博主ID'] = noteData.author; // 使用作者名作为ID
-    if (syncFields.authorUrl) data['博主链接'] = {
-      text: noteData.author || '博主主页',
-      link: noteData.authorUrl || ''
-    };
+    if (syncFields.authorUrl) {
+      const authorUrl = noteData.authorUrl || '';
+      if (authorUrl) {
+        data['博主链接'] = {
+          link: authorUrl,
+          text: noteData.author || '查看博主'
+        };
+      } else {
+        data['博主链接'] = {
+          link: '',
+          text: ''
+        };
+      }
+    }
     if (syncFields.authorName) data['博主昵称'] = noteData.author;
-    if (syncFields.authorXhsId) data['小红书号'] = noteData.authorXhsId || '';
-    if (syncFields.followerCount) data['粉丝数'] = parseInt(noteData.followerCount) || 0;
-    if (syncFields.likesAndCollections) data['获赞与收藏'] = parseInt(noteData.likesAndCollections) || 0;
+    if (syncFields.followerCount) data['粉丝数'] = noteData.followerCount || 0;
+    if (syncFields.likesAndCollections) data['获赞与收藏'] = parseInt(noteData.likesAndCollections || '0') || 0;
     if (syncFields.authorBio) data['博主简介'] = noteData.authorBio || '';
 
     // 其他
-    if (syncFields.imageCount) data['图片数量'] = noteData.images?.length || 0;
-    if (syncFields.noteImages) data['笔记图片'] = noteData.images?.join(', ') || '';
     if (syncFields.videoCover) data['视频封面'] = noteData.videoCover || '';
     if (syncFields.videoFile) data['视频文件'] = ''; // 无法直接获取视频文件URL
 
@@ -1225,20 +1261,15 @@ export default defineBackground(() => {
         { field_name: '分享量', field_type: 2 }, // 数字（千分位格式）
         { field_name: '发布时间', field_type: 5 }, // 日期
         { field_name: '更新时间', field_type: 5 }, // 日期
-        { field_name: 'IP地址', field_type: 1 }, // 文本
         
         // 博主信息
-        { field_name: '博主ID', field_type: 1 }, // 文本
         { field_name: '博主昵称', field_type: 1 }, // 文本
         { field_name: '博主链接', field_type: 15 }, // 超链接
-        { field_name: '小红书号', field_type: 1 }, // 文本
         { field_name: '粉丝数', field_type: 2 }, // 数字（千分位格式）
         { field_name: '获赞与收藏', field_type: 2 }, // 数字（千分位格式）
         { field_name: '博主简介', field_type: 1 }, // 文本
         
         // 其他信息
-        { field_name: '图片数量', field_type: 2 }, // 数字（整数格式）
-        { field_name: '笔记图片', field_type: 1 }, // 文本
         { field_name: '视频封面', field_type: 1 }, // 文本
         { field_name: '附件', field_type: 1 } // 文本
       ];

@@ -1,11 +1,14 @@
 import { defineContentScript } from 'wxt/sandbox';
 
+// 全局变量声明
+declare let urlChangeObserver: MutationObserver | undefined;
+declare let modalObserver: MutationObserver | undefined;
+
 // 笔记数据接口
 interface NoteData {
   title: string;
   author: string;
   authorUrl?: string;        // 博主链接
-  authorXhsId?: string;      // 小红书号
   authorBio?: string;        // 博主简介
   likes: number;
   comments: number;
@@ -17,12 +20,13 @@ interface NoteData {
   followerCount: number;
   likesAndCollections?: string; // 获赞与收藏
   noteScore: number;
-  images?: string[];         // 笔记图片URL数组
   content?: string;          // 笔记文本内容
   tags?: string[];           // 笔记标签数组
   topics?: string[];         // 笔记话题
   noteType?: string;         // 笔记类型（图文/视频）
   videoCover?: string;       // 视频封面
+  noteUrl?: string;          // 笔记链接
+  updateTime?: string;        // 更新时间
 }
 
 export default defineContentScript({
@@ -257,90 +261,1365 @@ export default defineContentScript({
       showMessage('复制选项功能开发中...', 'info');
     }
 
+    // 从页面JavaScript数据中获取真实数据
+    function extractDataFromPageScript(): any {
+      try {
+        console.log('🔍 开始提取页面JavaScript数据...');
+        
+        // 1. 尝试从window对象中获取数据（扩展更多可能的属性）
+        const windowKeys = [
+          '__INITIAL_STATE__',
+          '__NUXT__', 
+          '__NEXT_DATA__',
+          'initialState',
+          'pageData',
+          'appData',
+          'noteData',
+          'userInfo',
+          'globalData',
+          'reduxStore',
+          'store',
+          'state',
+          '__APOLLO_STATE__',
+          '__PRELOADED_STATE__'
+        ];
+        
+        for (const key of windowKeys) {
+          const windowData = (window as any)[key];
+          if (windowData && typeof windowData === 'object') {
+            console.log(`✅ 从window.${key}获取到数据`);
+            return windowData;
+          }
+        }
+
+        // 2. 尝试从script标签中获取JSON数据
+        const scriptTags = document.querySelectorAll('script[type="application/json"], script[type="application/ld+json"]');
+        for (const script of scriptTags) {
+          try {
+            const data = JSON.parse(script.textContent || '');
+            if (data && typeof data === 'object') {
+              console.log('✅ 从JSON script标签获取到数据');
+              return data;
+            }
+          } catch (e) {
+            // 忽略解析错误
+          }
+        }
+
+        // 3. 尝试从其他script标签中获取数据（增强模式匹配）
+        const allScripts = document.querySelectorAll('script');
+        for (const script of allScripts) {
+          const content = script.textContent || '';
+          
+          // 跳过太短的script
+          if (content.length < 100) continue;
+          
+          // 查找包含数据的script（扩展匹配模式）
+          const dataPatterns = [
+            'window.__INITIAL_STATE__',
+            'window.initialState',
+            'window.__NUXT__',
+            'window.__NEXT_DATA__',
+            '"noteId"',
+            '"likeCount"',
+            '"commentCount"',
+            '"shareCount"',
+            '"collectCount"',
+            '"interactInfo"',
+            '"stats"',
+            '"noteDetail"',
+            '"userInfo"'
+          ];
+          
+          const hasDataPattern = dataPatterns.some(pattern => content.includes(pattern));
+          
+          if (hasDataPattern) {
+            try {
+              // 尝试多种提取模式
+              const extractPatterns = [
+                /window\.__INITIAL_STATE__\s*=\s*({.+?});/,
+                /window\.initialState\s*=\s*({.+?});/,
+                /window\.__NUXT__\s*=\s*({.+?});/,
+                /window\.__NEXT_DATA__\s*=\s*({.+?});/,
+                /({.*"noteId".*"likeCount".*})/,
+                /({.*"interactInfo".*})/,
+                /({.*"stats".*"likeCount".*})/,
+                /({.*"noteDetail".*})/
+              ];
+              
+              for (const pattern of extractPatterns) {
+                const match = content.match(pattern);
+                if (match) {
+                  try {
+                    const data = JSON.parse(match[1]);
+                    console.log('✅ 从script标签提取到数据');
+                    return data;
+                  } catch (parseError) {
+                    // 尝试修复常见的JSON格式问题
+                    let fixedJson = match[1]
+                      .replace(/,\s*}/g, '}')  // 移除尾随逗号
+                      .replace(/,\s*]/g, ']')  // 移除数组尾随逗号
+                      .replace(/([{,]\s*)(\w+):/g, '$1"$2":'); // 给属性名加引号
+                    
+                    try {
+                      const data = JSON.parse(fixedJson);
+                      console.log('✅ 修复JSON格式后提取到数据');
+                      return data;
+                    } catch (e) {
+                      // 继续尝试下一个模式
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              // 忽略解析错误，继续下一个script
+            }
+          }
+        }
+
+        // 4. 尝试从React/Vue组件中获取数据
+        const reactRoot = document.querySelector('[data-reactroot]');
+        if (reactRoot) {
+          console.log('🔍 检测到React应用，尝试获取组件数据');
+          // 尝试获取React组件的数据
+          const reactInstance = (reactRoot as any)._reactInternalFiber || 
+                               (reactRoot as any)._reactInternalInstance ||
+                               (reactRoot as any).__reactInternalInstance;
+          if (reactInstance) {
+            console.log('✅ 找到React实例');
+            // 这里可以进一步探索React组件树
+          }
+        }
+
+        console.log('❌ 未能从JavaScript中提取到数据');
+      } catch (error) {
+        console.warn('❌ 提取页面数据失败:', error);
+      }
+      return null;
+     }
+
+    // 在复杂对象中查找笔记数据
+    function findNoteDataInObject(obj: any): any {
+      if (!obj || typeof obj !== 'object') return null;
+      
+      console.log('🔍 开始在对象中搜索笔记数据...');
+      
+      // 递归查找包含笔记数据的对象
+      function searchObject(current: any, depth = 0, path = ''): any {
+        if (depth > 15) return null; // 增加搜索深度
+        
+        if (current && typeof current === 'object') {
+          // 检查是否包含笔记相关字段
+          const hasNoteId = current.noteId || current.id || current.note_id || current.itemId;
+          const hasTitle = current.title || current.desc || current.description;
+          const hasInteractData = current.likeCount !== undefined || 
+                                 current.commentCount !== undefined ||
+                                 current.shareCount !== undefined ||
+                                 current.collectCount !== undefined ||
+                                 current.interactInfo ||
+                                 current.stats ||
+                                 current.engagement ||
+                                 current.metrics;
+
+          if ((hasNoteId || hasTitle) && hasInteractData) {
+            console.log(`✅ 在路径 ${path} 找到笔记数据`);
+            return current;
+          }
+
+          // 检查特定的数据路径（优先搜索）
+          const priorityPaths = [
+            'noteDetail', 'note', 'item', 'data', 'content', 'detail', 'info',
+            'props', 'pageProps', 'initialProps', 'serverData', 'hydrationData',
+            'noteInfo', 'itemInfo', 'feedItem', 'cardInfo'
+          ];
+
+          for (const priorityPath of priorityPaths) {
+            if (current[priorityPath] && typeof current[priorityPath] === 'object') {
+              const result = searchObject(current[priorityPath], depth + 1, `${path}.${priorityPath}`);
+              if (result) return result;
+            }
+          }
+
+          // 如果是数组，搜索数组中的每个元素
+          if (Array.isArray(current)) {
+            for (let i = 0; i < Math.min(current.length, 50); i++) { // 限制数组搜索数量
+              const result = searchObject(current[i], depth + 1, `${path}[${i}]`);
+              if (result) return result;
+            }
+          }
+          
+          // 递归搜索其他子对象
+          for (const key in current) {
+            if (current.hasOwnProperty(key) && typeof current[key] === 'object') {
+              // 跳过已经搜索过的优先路径
+              if (!priorityPaths.includes(key)) {
+                const result = searchObject(current[key], depth + 1, `${path}.${key}`);
+                if (result) return result;
+              }
+            }
+          }
+        }
+        return null;
+      }
+      
+      const result = searchObject(obj, 0, 'root');
+      if (!result) {
+        console.log('❌ 未在对象中找到笔记数据');
+      }
+      return result;
+    }
+
+    // 尝试触发悬浮窗并提取数据
+    function tryExtractFromHoverCard(): { author?: string; followerCount?: number; likesAndCollections?: string } {
+      const result: { author?: string; followerCount?: number; likesAndCollections?: string } = {};
+      
+      // 查找可能触发悬浮窗的元素
+      const hoverTriggers = [
+        '.author-container',
+        '.user-info',
+        '.author-wrapper',
+        '.user-avatar',
+        '.author-avatar',
+        '.user-name',
+        '.author-name',
+        '.nickname',
+        '[data-testid="author"]',
+        '.profile-link'
+      ];
+      
+      for (const triggerSelector of hoverTriggers) {
+        const triggerElement = document.querySelector(triggerSelector);
+        if (triggerElement) {
+          try {
+            // 模拟鼠标悬浮
+            const mouseEnterEvent = new MouseEvent('mouseenter', {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            });
+            triggerElement.dispatchEvent(mouseEnterEvent);
+            
+            // 等待悬浮窗出现
+            setTimeout(() => {
+              // 检查是否有悬浮窗出现
+              const hoverCard = document.querySelector('.hover-card, .user-hover-card, .author-hover, .popup-card, .tooltip, .user-card, .author-card');
+              if (hoverCard) {
+                console.log('✅ 检测到悬浮窗，尝试提取数据');
+                
+                // 提取博主名称
+                const nameElement = hoverCard.querySelector('.name, .nickname, .username');
+                if (nameElement?.textContent?.trim()) {
+                  result.author = nameElement.textContent.trim();
+                  console.log(`✅ 从悬浮窗获取博主名称: ${result.author}`);
+                }
+                
+                // 提取粉丝数
+                const followerElement = hoverCard.querySelector('.follower-count, .fans-count, .fans, .followers');
+                if (followerElement?.textContent?.trim()) {
+                  result.followerCount = parseNumber(followerElement.textContent.trim());
+                  console.log(`✅ 从悬浮窗获取粉丝数: ${result.followerCount}`);
+                }
+                
+                // 提取获赞与收藏
+                const likesElement = hoverCard.querySelector('.total-likes, .total-engagement, .likes-and-collections');
+                if (likesElement?.textContent?.trim()) {
+                  result.likesAndCollections = likesElement.textContent.trim();
+                  console.log(`✅ 从悬浮窗获取获赞与收藏: ${result.likesAndCollections}`);
+                }
+              }
+            }, 100); // 等待100ms让悬浮窗出现
+            
+            break; // 找到第一个可触发的元素就停止
+          } catch (error) {
+            console.warn(`⚠️ 触发悬浮窗时出错 (${triggerSelector}):`, error);
+          }
+        }
+      }
+      
+      return result;
+    }
+
+    // 时间戳转换辅助函数
+    function convertToTimestamp(timeValue: any): string {
+      try {
+        if (!timeValue) return '';
+        
+        // 如果已经是时间戳格式
+        if (typeof timeValue === 'number') {
+          return timeValue.toString();
+        }
+        
+        // 如果是字符串，尝试转换为Date对象
+        if (typeof timeValue === 'string') {
+          const date = new Date(timeValue);
+          if (!isNaN(date.getTime())) {
+            return date.getTime().toString();
+          }
+        }
+        
+        return '';
+      } catch (error) {
+        console.warn('⚠️ 时间戳转换失败:', error);
+        return '';
+      }
+    }
+
     // 提取笔记数据
     function extractNoteData(): NoteData {
+      // 首先尝试从悬浮窗获取数据
+      console.log('🔍 尝试从悬浮窗获取博主信息...');
+      const hoverCardData = tryExtractFromHoverCard();
+      
+      // 然后尝试从页面JavaScript数据中获取
+      let jsData: any = null;
+      
+      try {
+        const pageData = extractDataFromPageScript();
+        if (pageData) {
+          // 尝试找到笔记数据
+          jsData = findNoteDataInObject(pageData);
+        }
+      } catch (error) {
+        console.warn('⚠️ 提取页面JavaScript数据时出错:', error);
+        jsData = null;
+      }
+      
+      // 确保jsData始终有一个安全的默认值
+      if (!jsData) {
+        jsData = {};
+      }
+
       // 获取标题
-      const titleElement = document.querySelector('#detail-title') || 
-                      document.querySelector('[data-testid="note-title"]') ||
-                      document.querySelector('.note-detail-title') ||
-                      document.querySelector('h1');
-      const title = titleElement?.textContent?.trim() || '未知标题';
+      let title = '';
+      if (jsData?.title) {
+        title = jsData.title;
+      } else {
+        const titleElement = document.querySelector('#detail-title') || 
+                        document.querySelector('[data-testid="note-title"]') ||
+                        document.querySelector('.note-detail-title') ||
+                        document.querySelector('h1');
+        title = titleElement?.textContent?.trim() || '未知标题';
+      }
     
-      // 获取作者信息
-      const authorElement = document.querySelector('.user-name') ||
-                       document.querySelector('[data-testid="author-name"]') ||
-                       document.querySelector('.author-info .name') ||
-                       document.querySelector('.username');
-      const author = authorElement?.textContent?.trim() || '未知作者';
+      // 获取作者信息 - 优先从悬浮窗数据获取
+      let author = '';
+      console.log('🔍 开始提取作者信息...');
+      
+      // 优先使用悬浮窗数据
+      if (hoverCardData.author) {
+        author = hoverCardData.author;
+        console.log(`✅ 从悬浮窗获取作者: ${author}`);
+      }
+      
+      // 如果悬浮窗没有数据，尝试从JavaScript数据获取
+      if (!author && jsData) {
+        author = jsData.author || 
+                jsData.authorName || 
+                jsData.user?.name || 
+                jsData.user?.nickname || 
+                jsData.userInfo?.name ||
+                jsData.userInfo?.nickname ||
+                '';
+        if (author) {
+          console.log(`✅ 从JS数据获取作者: ${author}`);
+        }
+      }
+      
+      if (!author) {
+        // 尝试从悬浮窗中获取博主信息
+        const hoverCardSelectors = [
+          '.hover-card .name',
+          '.user-hover-card .name',
+          '.author-hover .name',
+          '.popup-card .name',
+          '.tooltip .name',
+          '.user-card .name',
+          '.author-card .name'
+        ];
+        
+        // 常规选择器
+        const authorSelectors = [
+          '.author-container .name',
+          '.user-info .name',
+          '.note-detail-author .name',
+          '.author-wrapper .name',
+          '.user-name',
+          '[data-testid="author-name"]',
+          '.author-info .name',
+          '.username',
+          '.author-name',
+          '.user-nickname',
+          '.nickname'
+        ];
+        
+        // 合并所有选择器，优先检查悬浮窗
+        const allSelectors = [...hoverCardSelectors, ...authorSelectors];
+        
+        for (const selector of allSelectors) {
+          const authorElement = document.querySelector(selector);
+          if (authorElement?.textContent?.trim()) {
+            author = authorElement.textContent.trim();
+            console.log(`✅ 从${selector}获取博主名称: ${author}`);
+            break;
+          }
+        }
+        
+        if (!author) {
+          author = '未知作者';
+        }
+      }
 
-      // 获取作者链接
-      const authorLinkElement = document.querySelector('.user-name a') ||
-                           document.querySelector('.author-info a') ||
-                           document.querySelector('[data-testid="author-link"]');
-      const authorUrl = authorLinkElement?.getAttribute('href') || '';
 
-      // 获取小红书号
-      const xhsIdElement = document.querySelector('.user-id') ||
-                      document.querySelector('.red-id') ||
-                      document.querySelector('[data-testid="user-id"]');
-      const authorXhsId = xhsIdElement?.textContent?.trim() || '';
 
-      // 获取博主简介
-      const bioElement = document.querySelector('.user-desc') ||
-                     document.querySelector('.author-bio') ||
-                     document.querySelector('[data-testid="author-bio"]');
-      const authorBio = bioElement?.textContent?.trim() || '';
+      // 获取作者链接 - 优先从JavaScript数据获取
+      let authorUrl = '';
+      if (jsData) {
+        authorUrl = jsData.authorLink || 
+                   jsData.user?.link || 
+                   jsData.user?.url ||
+                   jsData.userInfo?.link ||
+                   jsData.userInfo?.url ||
+                   '';
+        if (authorUrl && !authorUrl.startsWith('http')) {
+          if (authorUrl.startsWith('/')) {
+            authorUrl = 'https://www.xiaohongshu.com' + authorUrl;
+          } else {
+            authorUrl = 'https://www.xiaohongshu.com/' + authorUrl;
+          }
+        }
+      }
+      
+      if (!authorUrl) {
+        const authorLinkElement = document.querySelector('.author-container a') ||
+                             document.querySelector('.user-info a') ||
+                             document.querySelector('.note-detail-author a') ||
+                             document.querySelector('.author-wrapper a') ||
+                             document.querySelector('.user-name a') ||
+                             document.querySelector('.author-info a') ||
+                             document.querySelector('[data-testid="author-link"]') ||
+                             document.querySelector('.author-name a') ||
+                             document.querySelector('.user-nickname a') ||
+                             document.querySelector('.nickname a');
+        authorUrl = authorLinkElement?.getAttribute('href') || '';
+        if (authorUrl && !authorUrl.startsWith('http')) {
+          // 如果是相对路径，转换为完整URL
+          if (authorUrl.startsWith('/')) {
+            authorUrl = 'https://www.xiaohongshu.com' + authorUrl;
+          } else {
+            authorUrl = 'https://www.xiaohongshu.com/' + authorUrl;
+          }
+        }
+      }
+
+
+
+      // 获取博主简介 - 优先从JavaScript数据获取
+      let authorBio = '';
+      console.log('🔍 开始提取博主简介数据...');
+      
+      // 尝试从多个可能的JavaScript数据源获取
+      const bioSources = [
+        () => jsData?.authorBio,
+        () => jsData?.bio,
+        () => jsData?.description,
+        () => jsData?.user?.bio,
+        () => jsData?.user?.description,
+        () => jsData?.user?.intro,
+        () => jsData?.user?.signature,
+        () => jsData?.userInfo?.bio,
+        () => jsData?.userInfo?.description,
+        () => jsData?.userInfo?.intro,
+        () => jsData?.userInfo?.signature,
+        () => jsData?.author?.bio,
+        () => jsData?.author?.description,
+        () => jsData?.author?.intro,
+        () => jsData?.author?.signature,
+        () => jsData?.noteInfo?.authorBio,
+        () => jsData?.noteDetail?.authorBio,
+        () => jsData?.profile?.bio,
+        () => jsData?.profile?.description,
+        () => jsData?.profile?.intro,
+        () => jsData?.profile?.signature,
+        () => jsData?.data?.user?.bio,
+        () => jsData?.data?.user?.description,
+        () => jsData?.data?.author?.bio,
+        () => jsData?.data?.author?.description,
+        () => jsData?.meta?.author?.bio,
+        () => jsData?.meta?.author?.description,
+        // 尝试从window对象的其他可能位置获取
+        () => window.__INITIAL_STATE__?.user?.bio,
+        () => window.__INITIAL_STATE__?.user?.description,
+        () => window.__INITIAL_STATE__?.author?.bio,
+        () => window.__INITIAL_STATE__?.author?.description,
+        () => window.__NUXT__?.data?.[0]?.user?.bio,
+        () => window.__NUXT__?.data?.[0]?.user?.description,
+        () => window.initialData?.user?.bio,
+        () => window.initialData?.user?.description,
+        () => window.pageData?.user?.bio,
+        () => window.pageData?.user?.description,
+        () => window.userData?.bio,
+        () => window.userData?.description,
+        () => window.appData?.user?.bio,
+        () => window.appData?.user?.description
+      ];
+      
+      for (const getSource of bioSources) {
+        try {
+          const value = getSource();
+          if (value !== undefined && value !== null && value !== '') {
+            authorBio = String(value).trim();
+            if (authorBio) {
+              console.log(`✅ 从JS数据获取博主简介: ${authorBio.substring(0, 50)}...`);
+              break;
+            }
+          }
+        } catch (error) {
+          // 忽略错误，继续尝试下一个数据源
+        }
+      }
+      
+      if (!authorBio) {
+        const bioSelectors = [
+          '.author-container .desc',
+          '.user-info .desc',
+          '.note-detail-author .desc',
+          '.author-wrapper .desc',
+          '.user-desc',
+          '.author-bio',
+          '[data-testid="author-bio"]',
+          '.bio',
+          '.description',
+          '.user-description',
+          '.author-description',
+          '.profile-desc',
+          '.profile-description',
+          '.user-intro',
+          '.author-intro',
+          '.intro',
+          '[data-bio]',
+          '[data-description]',
+          '.author-container .description',
+          '.user-info .description',
+          '.note-detail-author .description'
+        ];
+        
+        let bioElement = null;
+        for (const selector of bioSelectors) {
+          bioElement = document.querySelector(selector);
+          if (bioElement) {
+            console.log(`✅ 使用选择器 ${selector} 找到博主简介元素`);
+            break;
+          }
+        }
+        
+        if (bioElement) {
+          authorBio = bioElement.textContent?.trim() ||
+                     bioElement.getAttribute('data-bio') ||
+                     bioElement.getAttribute('data-description') ||
+                     bioElement.getAttribute('title') || '';
+          if (authorBio) {
+            console.log(`✅ 从DOM获取博主简介: ${authorBio.substring(0, 50)}...`);
+          }
+        }
+      }
     
-      // 获取互动数据
-      const likeElement = document.querySelector('.like-count') ||
-                     document.querySelector('[data-testid="like-count"]') ||
-                     document.querySelector('.engagement-count:first-child') ||
-                     document.querySelector('.interact-count .like');
-      const likes = parseNumber(likeElement?.textContent || '0');
+      // 获取互动数据 - 使用更准确的选择器
+      // 点赞数 - 优先从JavaScript数据获取
+      let likes = 0;
+      console.log('🔍 开始提取点赞数据...');
+      
+      // 尝试从多个可能的JavaScript数据源获取
+      const likeSources = [
+        () => jsData?.likeCount,
+        () => jsData?.interactInfo?.likeCount,
+        () => jsData?.stats?.likeCount,
+        () => jsData?.engagement?.likes,
+        () => jsData?.metrics?.like,
+        () => jsData?.noteInfo?.likeCount,
+        () => jsData?.noteDetail?.likeCount,
+        () => jsData?.note?.likeCount,
+        () => jsData?.data?.likeCount,
+        () => jsData?.interact?.likeCount,
+        () => jsData?.socialData?.likes,
+        () => jsData?.reactions?.like,
+        () => jsData?.counts?.like,
+        () => jsData?.activity?.likes,
+        () => jsData?.meta?.likes,
+        // 尝试从window对象的其他可能位置获取
+        () => window.__INITIAL_STATE__?.note?.likeCount,
+        () => window.__NUXT__?.data?.[0]?.likeCount,
+        () => window.initialData?.note?.likeCount,
+        () => window.pageData?.note?.likeCount,
+        () => window.noteData?.likeCount,
+        () => window.appData?.note?.likeCount
+      ];
+      
+      for (const getSource of likeSources) {
+        try {
+          const value = getSource();
+          if (value !== undefined && value !== null) {
+            likes = parseInt(value) || 0;
+            console.log(`✅ 从JS数据获取点赞数: ${value} -> ${likes}`);
+            break;
+          }
+        } catch (error) {
+          // 忽略获取错误，继续尝试下一个源
+        }
+      }
+      
+      if (likes === 0) {
+        // 扩展DOM选择器
+        const likeSelectors = [
+          '.like-wrapper .count',
+          '.like-btn .count',
+          '[class*="like"] .count',
+          '.engagement-bar .like .count',
+          '.interact-bar .like .count',
+          '.note-detail-interaction .like .count',
+          '.like-count',
+          '[data-testid="like-count"]',
+          '.interaction-item[data-type="like"] .count',
+          '.interaction-like .count',
+          '.like-button .count',
+          '.like-num',
+          '.like-number',
+          '[data-like-count]',
+          '.social-actions .like .count',
+          '.action-like .count',
+          '.btn-like .count',
+          '.icon-like + .count',
+          '.thumbs-up .count',
+          '.heart-count',
+          '.praise-count'
+        ];
+        
+        let likeElement = null;
+        for (const selector of likeSelectors) {
+          likeElement = document.querySelector(selector);
+          if (likeElement && likeElement.textContent?.trim()) {
+            console.log(`✅ 使用选择器 ${selector} 找到点赞元素`);
+            break;
+          }
+        }
+        
+        if (!likeElement) {
+          // 尝试通过文本内容查找
+          const allElements = document.querySelectorAll('*');
+          for (const element of allElements) {
+            const text = element.textContent?.trim() || '';
+            if (text.match(/^\d+(\.\d+)?[万千kKwW]?$/) && 
+                element.className.toLowerCase().includes('like')) {
+              likeElement = element;
+              console.log('✅ 通过文本内容找到点赞元素');
+              break;
+            }
+          }
+        }
+        
+        likes = parseNumber(likeElement?.textContent || '0');
+        console.log(`📊 DOM提取点赞数: ${likes}`);
+      }
     
-      const commentElement = document.querySelector('.comment-count') ||
-                        document.querySelector('[data-testid="comment-count"]') ||
-                        document.querySelector('.engagement-count:nth-child(2)') ||
-                        document.querySelector('.interact-count .comment');
-      const comments = parseNumber(commentElement?.textContent || '0');
+      // 评论数 - 优先从JavaScript数据获取
+      let comments = 0;
+      console.log('🔍 开始提取评论数据...');
+      
+      // 尝试从多个可能的JavaScript数据源获取
+      const commentSources = [
+        () => jsData?.commentCount,
+        () => jsData?.interactInfo?.commentCount,
+        () => jsData?.stats?.commentCount,
+        () => jsData?.engagement?.comments,
+        () => jsData?.metrics?.comment,
+        () => jsData?.noteInfo?.commentCount,
+        () => jsData?.noteDetail?.commentCount,
+        () => jsData?.note?.commentCount,
+        () => jsData?.data?.commentCount,
+        () => jsData?.interact?.commentCount,
+        () => jsData?.socialData?.comments,
+        () => jsData?.reactions?.comment,
+        () => jsData?.counts?.comment,
+        () => jsData?.activity?.comments,
+        () => jsData?.meta?.comments,
+        // 尝试从window对象的其他可能位置获取
+        () => window.__INITIAL_STATE__?.note?.commentCount,
+        () => window.__NUXT__?.data?.[0]?.commentCount,
+        () => window.initialData?.note?.commentCount,
+        () => window.pageData?.note?.commentCount,
+        () => window.noteData?.commentCount,
+        () => window.appData?.note?.commentCount
+      ];
+      
+      for (const getSource of commentSources) {
+        try {
+          const value = getSource();
+          if (value !== undefined && value !== null) {
+            comments = parseInt(value) || 0;
+            console.log(`✅ 从JS数据获取评论数: ${value} -> ${comments}`);
+            break;
+          }
+        } catch (error) {
+          // 忽略获取错误，继续尝试下一个源
+        }
+      }
+      
+      if (comments === 0) {
+        // 扩展DOM选择器
+        const commentSelectors = [
+          '.comment-wrapper .count',
+          '.comment-btn .count',
+          '[class*="comment"] .count',
+          '.engagement-bar .comment .count',
+          '.interact-bar .comment .count',
+          '.note-detail-interaction .comment .count',
+          '.comment-count',
+          '[data-testid="comment-count"]',
+          '.interaction-item[data-type="comment"] .count',
+          '.interaction-comment .count',
+          '.comment-button .count',
+          '.comment-num',
+          '.comment-number',
+          '[data-comment-count]',
+          '.social-actions .comment .count',
+          '.action-comment .count',
+          '.btn-comment .count',
+          '.icon-comment + .count',
+          '.message-count',
+          '.reply-count',
+          '.discuss-count'
+        ];
+        
+        let commentElement = null;
+        for (const selector of commentSelectors) {
+          commentElement = document.querySelector(selector);
+          if (commentElement && commentElement.textContent?.trim()) {
+            console.log(`✅ 使用选择器 ${selector} 找到评论元素`);
+            break;
+          }
+        }
+        
+        if (!commentElement) {
+          // 尝试通过文本内容查找
+          const allElements = document.querySelectorAll('*');
+          for (const element of allElements) {
+            const text = element.textContent?.trim() || '';
+            if (text.match(/^\d+(\.\d+)?[万千kKwW]?$/) && 
+                element.className.toLowerCase().includes('comment')) {
+              commentElement = element;
+              console.log('✅ 通过文本内容找到评论元素');
+              break;
+            }
+          }
+        }
+        
+        comments = parseNumber(commentElement?.textContent || '0');
+        console.log(`📊 DOM提取评论数: ${comments}`);
+      }
     
-      const shareElement = document.querySelector('.share-count') ||
-                      document.querySelector('[data-testid="share-count"]') ||
-                      document.querySelector('.engagement-count:nth-child(3)') ||
-                      document.querySelector('.interact-count .share');
-      const shares = parseNumber(shareElement?.textContent || '0');
+      // 分享数 - 优先从JavaScript数据获取
+      let shares = 0;
+      console.log('🔍 开始提取分享数据...');
+      
+      // 尝试从多个可能的JavaScript数据源获取
+      const shareSources = [
+        () => jsData?.shareCount,
+        () => jsData?.interactInfo?.shareCount,
+        () => jsData?.stats?.shareCount,
+        () => jsData?.engagement?.shares,
+        () => jsData?.metrics?.share,
+        () => jsData?.noteInfo?.shareCount,
+        () => jsData?.noteDetail?.shareCount,
+        () => jsData?.note?.shareCount,
+        () => jsData?.data?.shareCount,
+        () => jsData?.interact?.shareCount,
+        () => jsData?.socialData?.shares,
+        () => jsData?.reactions?.share,
+        () => jsData?.counts?.share,
+        () => jsData?.activity?.shares,
+        () => jsData?.meta?.shares,
+        // 尝试从window对象的其他可能位置获取
+        () => window.__INITIAL_STATE__?.note?.shareCount,
+        () => window.__NUXT__?.data?.[0]?.shareCount,
+        () => window.initialData?.note?.shareCount,
+        () => window.pageData?.note?.shareCount,
+        () => window.noteData?.shareCount,
+        () => window.appData?.note?.shareCount
+      ];
+      
+      for (const getSource of shareSources) {
+        try {
+          const value = getSource();
+          if (value !== undefined && value !== null) {
+            shares = parseInt(value) || 0;
+            console.log(`✅ 从JS数据获取分享数: ${value} -> ${shares}`);
+            break;
+          }
+        } catch (error) {
+          // 忽略获取错误，继续尝试下一个源
+        }
+      }
+      
+      if (shares === 0) {
+        // 扩展DOM选择器
+        const shareSelectors = [
+          '.share-wrapper .count',
+          '.share-btn .count',
+          '[class*="share"] .count',
+          '.engagement-bar .share .count',
+          '.interact-bar .share .count',
+          '.note-detail-interaction .share .count',
+          '.share-count',
+          '[data-testid="share-count"]',
+          '.interaction-item[data-type="share"] .count',
+          '.interaction-share .count',
+          '.share-button .count',
+          '.share-num',
+          '.share-number',
+          '[data-share-count]',
+          '.social-actions .share .count',
+          '.action-share .count',
+          '.btn-share .count',
+          '.icon-share + .count',
+          '.forward-count',
+          '.repost-count',
+          '.spread-count'
+        ];
+        
+        let shareElement = null;
+        for (const selector of shareSelectors) {
+          shareElement = document.querySelector(selector);
+          if (shareElement && shareElement.textContent?.trim()) {
+            console.log(`✅ 使用选择器 ${selector} 找到分享元素`);
+            break;
+          }
+        }
+        
+        if (!shareElement) {
+          // 尝试通过文本内容查找
+          const allElements = document.querySelectorAll('*');
+          for (const element of allElements) {
+            const text = element.textContent?.trim() || '';
+            if (text.match(/^\d+(\.\d+)?[万千kKwW]?$/) && 
+                element.className.toLowerCase().includes('share')) {
+              shareElement = element;
+              console.log('✅ 通过文本内容找到分享元素');
+              break;
+            }
+          }
+        }
+        
+        shares = parseNumber(shareElement?.textContent || '0');
+        console.log(`📊 DOM提取分享数: ${shares}`);
+      }
 
-      // 获取收藏数
-      const collectElement = document.querySelector('.collect-count') ||
-                        document.querySelector('[data-testid="collect-count"]') ||
-                        document.querySelector('.bookmark-count');
-      const collections = parseNumber(collectElement?.textContent || '0');
+      // 收藏数 - 优先从JavaScript数据获取
+      let collections = 0;
+      console.log('🔍 开始提取收藏数据...');
+      
+      if (jsData?.collectCount !== undefined) {
+        collections = parseInt(jsData.collectCount) || 0;
+        console.log(`✅ 从JS数据获取收藏数: ${collections}`);
+      } else if (jsData?.interactInfo?.collectCount !== undefined) {
+        collections = parseInt(jsData.interactInfo.collectCount) || 0;
+        console.log(`✅ 从JS interactInfo获取收藏数: ${collections}`);
+      } else if (jsData?.stats?.collectCount !== undefined) {
+        collections = parseInt(jsData.stats.collectCount) || 0;
+        console.log(`✅ 从JS stats获取收藏数: ${collections}`);
+      } else if (jsData?.engagement?.collects !== undefined) {
+        collections = parseInt(jsData.engagement.collects) || 0;
+        console.log(`✅ 从JS engagement获取收藏数: ${collections}`);
+      } else if (jsData?.metrics?.collect !== undefined) {
+        collections = parseInt(jsData.metrics.collect) || 0;
+        console.log(`✅ 从JS metrics获取收藏数: ${collections}`);
+      } else {
+        // 扩展DOM选择器
+        const collectSelectors = [
+          '.collect-wrapper .count',
+          '.collect-btn .count',
+          '[class*="collect"] .count',
+          '.engagement-bar .collect .count',
+          '.interact-bar .collect .count',
+          '.note-detail-interaction .collect .count',
+          '.collect-count',
+          '[data-testid="collect-count"]',
+          '.bookmark-count',
+          '.interaction-item[data-type="collect"] .count',
+          '.interaction-collect .count',
+          '.collect-button .count',
+          '.collect-num',
+          '.collect-number',
+          '[data-collect-count]',
+          '.social-actions .collect .count',
+          '.action-collect .count',
+          '.btn-collect .count',
+          '.icon-collect + .count',
+          '.save-count',
+          '.favorite-count'
+        ];
+        
+        let collectElement = null;
+        for (const selector of collectSelectors) {
+          collectElement = document.querySelector(selector);
+          if (collectElement && collectElement.textContent?.trim()) {
+            console.log(`✅ 使用选择器 ${selector} 找到收藏元素`);
+            break;
+          }
+        }
+        
+        if (!collectElement) {
+          // 尝试通过文本内容查找
+          const allElements = document.querySelectorAll('*');
+          for (const element of allElements) {
+            const text = element.textContent?.trim() || '';
+            if (text.match(/^\d+(\.\d+)?[万千kKwW]?$/) && 
+                (element.className.toLowerCase().includes('collect') ||
+                 element.className.toLowerCase().includes('bookmark') ||
+                 element.className.toLowerCase().includes('save'))) {
+              collectElement = element;
+              console.log('✅ 通过文本内容找到收藏元素');
+              break;
+            }
+          }
+        }
+        
+        collections = parseNumber(collectElement?.textContent || '0');
+        console.log(`📊 DOM提取收藏数: ${collections}`);
+      }
     
-      // 获取发布时间
-      const timeElement = document.querySelector('.publish-time') ||
-                     document.querySelector('[data-testid="publish-time"]') ||
-                     document.querySelector('.time') ||
-                     document.querySelector('.date');
-      const timeText = timeElement?.textContent?.trim() || '';
-      // 将相对时间转换为Unix时间戳，然后转换为字符串
-      const publishTime = parseRelativeTime(timeText).toString();
+      // 获取发布时间 - 优先从JavaScript数据获取
+      let publishTime = '';
+      console.log('🔍 开始提取发布时间数据...');
+      
+      if (jsData?.publishTime) {
+        publishTime = new Date(jsData.publishTime).getTime().toString();
+        console.log(`✅ 从JS publishTime获取时间: ${publishTime}`);
+      } else if (jsData?.createTime) {
+        publishTime = new Date(jsData.createTime).getTime().toString();
+        console.log(`✅ 从JS createTime获取时间: ${publishTime}`);
+      } else if (jsData?.time) {
+        publishTime = new Date(jsData.time).getTime().toString();
+        console.log(`✅ 从JS time获取时间: ${publishTime}`);
+      } else if (jsData?.timestamp) {
+        publishTime = jsData.timestamp.toString();
+        console.log(`✅ 从JS timestamp获取时间: ${publishTime}`);
+      } else if (jsData?.createdAt) {
+        publishTime = new Date(jsData.createdAt).getTime().toString();
+        console.log(`✅ 从JS createdAt获取时间: ${publishTime}`);
+      } else if (jsData?.publishedAt) {
+        publishTime = new Date(jsData.publishedAt).getTime().toString();
+        console.log(`✅ 从JS publishedAt获取时间: ${publishTime}`);
+      } else if (jsData?.noteInfo?.publishTime) {
+        publishTime = new Date(jsData.noteInfo.publishTime).getTime().toString();
+        console.log(`✅ 从JS noteInfo.publishTime获取时间: ${publishTime}`);
+      } else if (jsData?.noteDetail?.publishTime) {
+        publishTime = new Date(jsData.noteDetail.publishTime).getTime().toString();
+        console.log(`✅ 从JS noteDetail.publishTime获取时间: ${publishTime}`);
+      } else {
+        // 从DOM获取 - 扩展选择器
+        const timeSelectors = [
+          '.note-detail-time',
+          '.publish-time',
+          '.note-time',
+          '.time-info',
+          '[data-testid="publish-time"]',
+          '.time',
+          '.date',
+          '.note-detail-desc .time',
+          '.note-scroller .time',
+          '.author-info .time',
+          '.note-header .time',
+          '.note-meta .time',
+          '.post-time',
+          '.creation-time',
+          '.upload-time',
+          '[data-time]',
+          '[data-publish-time]',
+          '[data-created-at]',
+          '.timestamp',
+          '.datetime',
+          '.note-info .time',
+          '.content-time',
+          '.publish-date',
+          '.create-date'
+        ];
+
+        for (const selector of timeSelectors) {
+          const timeElement = document.querySelector(selector);
+          if (timeElement) {
+            // 优先检查data属性
+            const dataTime = timeElement.getAttribute('data-time') ||
+                           timeElement.getAttribute('data-publish-time') ||
+                           timeElement.getAttribute('data-created-at') ||
+                           timeElement.getAttribute('datetime') ||
+                           timeElement.getAttribute('title');
+            
+            if (dataTime) {
+              publishTime = new Date(dataTime).getTime().toString();
+              console.log(`✅ 从${selector}的属性获取时间: ${dataTime} -> ${publishTime}`);
+              break;
+            }
+            
+            const timeText = timeElement.textContent?.trim();
+            if (timeText) {
+              // 将相对时间转换为Unix时间戳，然后转换为字符串
+              publishTime = parseRelativeTime(timeText).toString();
+              console.log(`✅ 从${selector}的文本获取时间: ${timeText} -> ${publishTime}`);
+              break;
+            }
+          }
+        }
+
+        // 如果没有找到时间，尝试从页面元数据中获取
+        if (!publishTime) {
+          const metaSelectors = [
+            'meta[property="article:published_time"]',
+            'meta[name="publish-time"]',
+            'meta[property="article:created_time"]',
+            'meta[name="created-time"]',
+            'meta[property="og:published_time"]',
+            'meta[name="date"]',
+            'meta[property="article:modified_time"]',
+            'meta[name="last-modified"]'
+          ];
+          
+          for (const metaSelector of metaSelectors) {
+            const metaElement = document.querySelector(metaSelector);
+            const metaTime = metaElement?.getAttribute('content');
+            if (metaTime) {
+              publishTime = new Date(metaTime).getTime().toString();
+              console.log(`✅ 从${metaSelector}获取时间: ${metaTime} -> ${publishTime}`);
+              break;
+            }
+          }
+        }
+        
+        // 如果仍然没有找到，尝试从JSON-LD结构化数据中获取
+        if (!publishTime) {
+          const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+          for (const script of jsonLdScripts) {
+            try {
+              const data = JSON.parse(script.textContent || '');
+              const datePublished = data.datePublished || data.dateCreated || data.uploadDate;
+              if (datePublished) {
+                publishTime = new Date(datePublished).getTime().toString();
+                console.log(`✅ 从JSON-LD获取时间: ${datePublished} -> ${publishTime}`);
+                break;
+              }
+            } catch (e) {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
     
-      // 获取作者粉丝数
-      const followerElement = document.querySelector('.follower-count') ||
-                         document.querySelector('[data-testid="follower-count"]') ||
-                         document.querySelector('.fans-count');
-      const followerCount = parseNumber(followerElement?.textContent || '0');
+      // 获取作者粉丝数 - 优先从悬浮窗数据获取
+      let followerCount = 0;
+      console.log('🔍 开始提取粉丝数数据...');
+      
+      // 优先使用悬浮窗数据
+      if (hoverCardData.followerCount) {
+        followerCount = hoverCardData.followerCount;
+        console.log(`✅ 从悬浮窗获取粉丝数: ${followerCount}`);
+      }
+      
+      // 如果悬浮窗没有数据，尝试从JavaScript数据获取
+      if (!followerCount) {
+        const followerSources = [
+          () => jsData?.followerCount,
+          () => jsData?.fansCount,
+          () => jsData?.fans,
+          () => jsData?.followers,
+          () => jsData?.user?.followerCount,
+          () => jsData?.user?.fansCount,
+          () => jsData?.user?.fans,
+          () => jsData?.user?.followers,
+          () => jsData?.userInfo?.followerCount,
+          () => jsData?.userInfo?.fansCount,
+          () => jsData?.userInfo?.fans,
+          () => jsData?.userInfo?.followers,
+          () => jsData?.author?.followerCount,
+          () => jsData?.author?.fansCount,
+          () => jsData?.author?.fans,
+          () => jsData?.author?.followers,
+          () => jsData?.stats?.followerCount,
+          () => jsData?.stats?.fansCount,
+          () => jsData?.profile?.followerCount,
+          () => jsData?.profile?.fansCount,
+          () => jsData?.profile?.fans,
+          () => jsData?.profile?.followers,
+          () => jsData?.data?.followerCount,
+          () => jsData?.data?.fansCount,
+          () => jsData?.noteInfo?.author?.followerCount,
+          () => jsData?.noteDetail?.author?.followerCount,
+          () => jsData?.note?.author?.followerCount,
+          // 尝试从window对象的其他可能位置获取
+          () => window.__INITIAL_STATE__?.user?.followerCount,
+          () => window.__NUXT__?.data?.[0]?.author?.followerCount,
+          () => window.initialData?.user?.followerCount,
+          () => window.pageData?.user?.followerCount,
+          () => window.userData?.followerCount,
+          () => window.appData?.user?.followerCount
+        ];
+        
+        for (const getSource of followerSources) {
+          try {
+            const value = getSource();
+            if (value !== undefined && value !== null && value !== '') {
+              followerCount = parseNumber(value.toString());
+              if (followerCount > 0) {
+                console.log(`✅ 从JS数据获取粉丝数: ${value} -> ${followerCount}`);
+                break;
+              }
+            }
+          } catch (error) {
+            // 忽略获取错误，继续尝试下一个源
+          }
+        }
+      }
+      
+      if (!followerCount) {
+        // 悬浮窗选择器 - 优先检查
+        const hoverCardFollowerSelectors = [
+          '.hover-card .follower-count',
+          '.user-hover-card .follower-count',
+          '.author-hover .follower-count',
+          '.popup-card .follower-count',
+          '.tooltip .follower-count',
+          '.user-card .follower-count',
+          '.author-card .follower-count',
+          '.hover-card .fans-count',
+          '.user-hover-card .fans-count',
+          '.author-hover .fans-count',
+          '.popup-card .fans-count',
+          '.tooltip .fans-count',
+          '.user-card .fans-count',
+          '.author-card .fans-count',
+          '.hover-card .fans',
+          '.user-hover-card .fans',
+          '.author-hover .fans',
+          '.popup-card .fans',
+          '.tooltip .fans',
+          '.user-card .fans',
+          '.author-card .fans'
+        ];
+        
+        // 常规选择器
+        const followerSelectors = [
+          '.author-container .follower-count',
+          '.user-info .follower-count',
+          '.note-detail-author .follower-count',
+          '.author-wrapper .follower-count',
+          '.author-stats .follower',
+          '.user-stats .follower',
+          '.follower-count',
+          '[data-testid="follower-count"]',
+          '.fans-count',
+          '.fans',
+          '.followers',
+          '.author-followers',
+          '.user-followers',
+          '.profile-followers',
+          '[data-followers]',
+          '[data-fans]',
+          '[data-follower-count]',
+          '.author-container .fans',
+          '.user-info .fans',
+          '.note-detail-author .fans',
+          '.author-wrapper .fans'
+        ];
+        
+        // 合并所有选择器，优先检查悬浮窗
+        const allFollowerSelectors = [...hoverCardFollowerSelectors, ...followerSelectors];
+        
+        let followerElement = null;
+        for (const selector of allFollowerSelectors) {
+          followerElement = document.querySelector(selector);
+          if (followerElement) {
+            console.log(`✅ 使用选择器 ${selector} 找到粉丝数元素`);
+            break;
+          }
+        }
+        
+        if (followerElement) {
+          const followerText = followerElement.textContent?.trim() ||
+                              followerElement.getAttribute('data-followers') ||
+                              followerElement.getAttribute('data-fans') ||
+                              followerElement.getAttribute('data-follower-count') ||
+                              followerElement.getAttribute('title') || '0';
+          followerCount = parseNumber(followerText);
+          console.log(`✅ 从DOM获取粉丝数: ${followerText} -> ${followerCount}`);
+        }
+      }
 
-      // 获取获赞与收藏数
-      const likesAndCollectionsElement = document.querySelector('.total-likes') ||
-                                    document.querySelector('[data-testid="total-engagement"]');
-      const likesAndCollections = likesAndCollectionsElement?.textContent?.trim() || '';
+      // 获取获赞与收藏数 - 优先从悬浮窗数据获取
+      let likesAndCollections = '';
+      console.log('🔍 开始提取获赞与收藏数据...');
+      
+      // 优先从悬浮窗数据获取
+      if (hoverCardData.likesAndCollections) {
+        likesAndCollections = hoverCardData.likesAndCollections;
+        console.log(`✅ 从悬浮窗数据获取获赞与收藏: ${likesAndCollections}`);
+      } else {
+        // 尝试从多个可能的JavaScript数据源获取
+        const likesAndCollectionsSources = [
+          () => jsData?.likesAndCollections,
+          () => jsData?.totalLikes,
+          () => jsData?.totalEngagement,
+          () => jsData?.user?.likesAndCollections,
+          () => jsData?.user?.totalLikes,
+          () => jsData?.user?.totalEngagement,
+          () => jsData?.userInfo?.likesAndCollections,
+          () => jsData?.userInfo?.totalLikes,
+          () => jsData?.userInfo?.totalEngagement,
+          () => jsData?.author?.likesAndCollections,
+          () => jsData?.author?.totalLikes,
+          () => jsData?.author?.totalEngagement,
+          () => jsData?.stats?.totalLikes,
+          () => jsData?.stats?.totalEngagement,
+          () => jsData?.profile?.likesAndCollections,
+          () => jsData?.profile?.totalLikes,
+          () => jsData?.profile?.totalEngagement,
+          () => jsData?.data?.likesAndCollections,
+          () => jsData?.data?.totalLikes,
+          () => jsData?.noteInfo?.author?.likesAndCollections,
+          () => jsData?.noteDetail?.author?.likesAndCollections,
+          () => jsData?.note?.author?.likesAndCollections,
+          () => jsData?.engagement?.total,
+          () => jsData?.metrics?.totalLikes,
+          () => jsData?.activity?.totalLikes,
+          // 尝试从window对象的其他可能位置获取
+          () => window.__INITIAL_STATE__?.user?.likesAndCollections,
+          () => window.__NUXT__?.data?.[0]?.author?.likesAndCollections,
+          () => window.initialData?.user?.likesAndCollections,
+          () => window.pageData?.user?.likesAndCollections,
+          () => window.userData?.likesAndCollections,
+          () => window.appData?.user?.likesAndCollections
+        ];
+        
+        for (const getSource of likesAndCollectionsSources) {
+          try {
+            const value = getSource();
+            if (value !== undefined && value !== null && value !== '') {
+              likesAndCollections = value.toString();
+              console.log(`✅ 从JS数据获取获赞与收藏: ${value} -> ${likesAndCollections}`);
+              break;
+            }
+          } catch (error) {
+            // 忽略获取错误，继续尝试下一个源
+          }
+        }
+      }
+      
+      if (!likesAndCollections) {
+        // 悬浮窗选择器 - 优先检查
+        const hoverCardLikesSelectors = [
+          '.hover-card .total-likes',
+          '.user-hover-card .total-likes',
+          '.author-hover .total-likes',
+          '.popup-card .total-likes',
+          '.tooltip .total-likes',
+          '.user-card .total-likes',
+          '.author-card .total-likes',
+          '.hover-card .total-engagement',
+          '.user-hover-card .total-engagement',
+          '.author-hover .total-engagement',
+          '.popup-card .total-engagement',
+          '.tooltip .total-engagement',
+          '.user-card .total-engagement',
+          '.author-card .total-engagement',
+          '.hover-card .likes-and-collections',
+          '.user-hover-card .likes-and-collections',
+          '.author-hover .likes-and-collections',
+          '.popup-card .likes-and-collections',
+          '.tooltip .likes-and-collections',
+          '.user-card .likes-and-collections',
+          '.author-card .likes-and-collections'
+        ];
+        
+        // 常规选择器
+        const likesAndCollectionsSelectors = [
+          '.author-container .total-likes',
+          '.user-info .total-likes',
+          '.note-detail-author .total-likes',
+          '.author-wrapper .total-likes',
+          '.author-stats .total-engagement',
+          '.user-stats .total-engagement',
+          '.total-likes',
+          '[data-testid="total-engagement"]',
+          '.total-engagement',
+          '.author-total-likes',
+          '.user-total-likes',
+          '.profile-total-likes',
+          '.likes-and-collections',
+          '.total-interactions',
+          '[data-total-likes]',
+          '[data-total-engagement]',
+          '[data-likes-collections]',
+          '.author-container .total-engagement',
+          '.user-info .total-engagement',
+          '.note-detail-author .total-engagement'
+        ];
+        
+        // 合并所有选择器，优先检查悬浮窗
+        const allLikesSelectors = [...hoverCardLikesSelectors, ...likesAndCollectionsSelectors];
+        
+        let likesAndCollectionsElement = null;
+        for (const selector of allLikesSelectors) {
+          likesAndCollectionsElement = document.querySelector(selector);
+          if (likesAndCollectionsElement) {
+            console.log(`✅ 使用选择器 ${selector} 找到获赞与收藏元素`);
+            break;
+          }
+        }
+        
+        if (likesAndCollectionsElement) {
+          likesAndCollections = likesAndCollectionsElement.textContent?.trim() ||
+                               likesAndCollectionsElement.getAttribute('data-total-likes') ||
+                               likesAndCollectionsElement.getAttribute('data-total-engagement') ||
+                               likesAndCollectionsElement.getAttribute('data-likes-collections') ||
+                               likesAndCollectionsElement.getAttribute('title') || '';
+          if (likesAndCollections) {
+            console.log(`✅ 从DOM获取获赞与收藏: ${likesAndCollections}`);
+          }
+        }
+      }
 
-      // 获取笔记话题
-      const topicElements = document.querySelectorAll('.topic') ||
-                       document.querySelectorAll('[data-testid="topic"]') ||
-                       document.querySelectorAll('.hashtag');
-      const topics = Array.from(topicElements).map(el => el.textContent?.trim()).filter(Boolean);
+      // 获取笔记话题 - 使用更准确的选择器
+      const topics: string[] = [];
+      
+      // 尝试多种选择器来获取话题
+      const topicSelectors = [
+        '.note-detail-topic .topic-item',
+        '.topic-list .topic',
+        '.hashtag-list .hashtag',
+        '.note-topic .topic',
+        '.topic-container .topic',
+        '[data-testid="topic"]',
+        '.topic',
+        '.hashtag',
+        'a[href*="/search_result?keyword="]',
+        'a[href*="/topic/"]',
+        '.tag-item[href*="/search_result"]'
+      ];
+
+      for (const selector of topicSelectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          elements.forEach(el => {
+            const topicText = el.textContent?.trim();
+            if (topicText && !topics.includes(topicText)) {
+              // 清理话题文本，移除#符号
+              const cleanTopic = topicText.replace(/^#/, '').trim();
+              if (cleanTopic) {
+                topics.push(cleanTopic);
+              }
+            }
+          });
+          break; // 找到话题后就停止搜索
+        }
+      }
+
+      console.log('提取到的话题:', topics);
 
       // 判断笔记类型
       const hasVideo = document.querySelector('video') || document.querySelector('.video-container');
@@ -356,8 +1635,7 @@ export default defineContentScript({
       // 计算笔记评分（基于互动数据的综合评分）
       const noteScore = calculateNoteScore(likes, comments, shares, followerCount);
 
-      // 提取笔记图片
-      const images = extractNoteImages();
+
 
       // 提取笔记内容
       const rawContent = extractNoteContent();
@@ -365,72 +1643,176 @@ export default defineContentScript({
       // 提取笔记标签
       const tags = extractNoteTags();
 
-      // 清理正文中的标签，避免重复显示
-      const content = cleanContentFromTags(rawContent, tags);
+      // 保留原始内容格式，并在最后附加标签
+      let content = rawContent;
+      if (tags && tags.length > 0) {
+        // 在内容末尾添加标签
+        const tagString = tags.map(tag => `#${tag}`).join(' ');
+        content = content ? `${content}\n\n${tagString}` : tagString;
+      }
     
+      // 获取更新时间 - 优先从JavaScript数据获取
+      let updateTime = '';
+      console.log('🔍 开始提取更新时间数据...');
+      
+      // 尝试从多个可能的JavaScript数据源获取
+      const updateTimeSources = [
+        () => jsData?.updateTime,
+        () => jsData?.lastModified,
+        () => jsData?.modifiedTime,
+        () => jsData?.lastUpdateTime,
+        () => jsData?.updatedAt,
+        () => jsData?.editTime,
+        () => jsData?.lastEditTime,
+        () => jsData?.noteInfo?.updateTime,
+        () => jsData?.noteDetail?.updateTime,
+        () => jsData?.noteInfo?.lastModified,
+        () => jsData?.noteDetail?.lastModified,
+        () => jsData?.note?.updateTime,
+        () => jsData?.note?.lastModified,
+        () => jsData?.data?.updateTime,
+        () => jsData?.data?.lastModified,
+        () => jsData?.meta?.updateTime,
+        () => jsData?.meta?.lastModified,
+        () => jsData?.timestamps?.updated,
+        () => jsData?.timestamps?.modified,
+        () => jsData?.time?.updated,
+        () => jsData?.time?.modified,
+        // 尝试从window对象的其他可能位置获取
+        () => window.__INITIAL_STATE__?.note?.updateTime,
+        () => window.__NUXT__?.data?.[0]?.updateTime,
+        () => window.initialData?.note?.updateTime,
+        () => window.pageData?.note?.updateTime,
+        () => window.noteData?.updateTime,
+        () => window.appData?.note?.updateTime
+      ];
+      
+      for (const getSource of updateTimeSources) {
+        try {
+          const value = getSource();
+          if (value !== undefined && value !== null && value !== '') {
+            updateTime = convertToTimestamp(value);
+            if (updateTime) {
+              console.log(`✅ 从JS数据获取更新时间: ${value} -> ${updateTime}`);
+              break;
+            }
+          }
+        } catch (error) {
+          // 忽略获取错误，继续尝试下一个源
+        }
+      }
+      
+      // 如果JavaScript数据中没有更新时间，尝试从DOM获取
+      if (!updateTime) {
+        const updateTimeSelectors = [
+          '[data-update-time]',
+          '.update-time',
+          '.last-modified',
+          '.modified-time',
+          '.edit-time',
+          '.last-edit-time',
+          '[data-last-modified]',
+          '[data-modified-time]',
+          '[data-updated-at]',
+          '.note-update-time',
+          '.content-update-time',
+          '.post-update-time',
+          '.modification-time',
+          '.last-update'
+        ];
+        
+        let updateTimeElement = null;
+        for (const selector of updateTimeSelectors) {
+          updateTimeElement = document.querySelector(selector);
+          if (updateTimeElement) {
+            console.log(`✅ 使用选择器 ${selector} 找到更新时间元素`);
+            break;
+          }
+        }
+        
+        if (updateTimeElement) {
+          const timeText = updateTimeElement.textContent?.trim() || 
+                          updateTimeElement.getAttribute('data-update-time') ||
+                          updateTimeElement.getAttribute('data-last-modified') ||
+                          updateTimeElement.getAttribute('data-modified-time') ||
+                          updateTimeElement.getAttribute('data-updated-at') ||
+                          updateTimeElement.getAttribute('datetime') ||
+                          updateTimeElement.getAttribute('title') || '';
+          if (timeText) {
+            updateTime = convertToTimestamp(timeText);
+            console.log(`✅ 从DOM获取更新时间: ${timeText} -> ${updateTime}`);
+          }
+        }
+        
+        // 如果仍然没有找到，尝试从meta标签获取
+        if (!updateTime) {
+          const metaSelectors = [
+            'meta[property="article:modified_time"]',
+            'meta[name="last-modified"]',
+            'meta[property="og:updated_time"]',
+            'meta[name="updated-time"]',
+            'meta[name="edit-time"]'
+          ];
+          
+          for (const metaSelector of metaSelectors) {
+            const metaElement = document.querySelector(metaSelector);
+            const metaTime = metaElement?.getAttribute('content');
+            if (metaTime) {
+              updateTime = convertToTimestamp(metaTime);
+              console.log(`✅ 从${metaSelector}获取更新时间: ${metaTime} -> ${updateTime}`);
+              break;
+            }
+          }
+        }
+        
+        // 如果仍然没有找到，尝试从JSON-LD结构化数据中获取
+        if (!updateTime) {
+          const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+          for (const script of jsonLdScripts) {
+            try {
+              const data = JSON.parse(script.textContent || '');
+              const dateModified = data.dateModified || data.dateUpdated || data.lastModified;
+              if (dateModified) {
+                updateTime = convertToTimestamp(dateModified);
+                console.log(`✅ 从JSON-LD获取更新时间: ${dateModified} -> ${updateTime}`);
+                break;
+              }
+            } catch (e) {
+              // 忽略解析错误
+            }
+          }
+        }
+      }
+
+      // 获取笔记链接
+      const noteUrl = window.location.href;
+
       return {
         title,
         author,
         authorUrl,
-        authorXhsId,
         authorBio,
         likes,
         comments,
         shares,
         collections,
         publishTime,
+        updateTime,
         recommendLevel: 'medium', // 默认值，用户可以修改
         likeFollowRatio,
         followerCount,
         likesAndCollections,
         noteScore,
-        images,
         content,
         tags,
         topics,
         noteType,
-        videoCover
+        videoCover,
+        noteUrl
       };
     }
 
-    // 提取笔记图片
-    function extractNoteImages(): string[] {
-      const images: string[] = [];
-      
-      // 尝试多种选择器来获取图片
-      const imageSelectors = [
-        '.note-detail-img img',
-        '.note-content img',
-        '.swiper-slide img',
-        '.image-container img',
-        '[data-testid="note-image"]',
-        '.note-scroller img'
-      ];
 
-      for (const selector of imageSelectors) {
-        const imageElements = document.querySelectorAll(selector);
-        if (imageElements.length > 0) {
-          imageElements.forEach((img: Element) => {
-            const imgElement = img as HTMLImageElement;
-            let src = imgElement.src || imgElement.getAttribute('data-src') || imgElement.getAttribute('data-original');
-            
-            if (src && !images.includes(src)) {
-              // 确保是完整的URL
-              if (src.startsWith('//')) {
-                src = 'https:' + src;
-              } else if (src.startsWith('/')) {
-                src = 'https://www.xiaohongshu.com' + src;
-              }
-              images.push(src);
-            }
-          });
-          break; // 找到图片就停止搜索
-        }
-      }
-
-      console.log('提取到的图片:', images);
-      return images;
-    }
 
     // 提取笔记内容
     function extractNoteContent(): string {
@@ -447,10 +1829,35 @@ export default defineContentScript({
       for (const selector of contentSelectors) {
         const contentElement = document.querySelector(selector);
         if (contentElement) {
-          const content = contentElement.textContent?.trim();
+          // 使用innerHTML获取内容，然后转换为保留格式的文本
+          let content = contentElement.innerHTML;
           if (content) {
-            console.log('提取到的内容:', content);
-            return content;
+            // 将HTML标签转换为换行符，保留原有格式
+            content = content
+              .replace(/<br\s*\/?>/gi, '\n')  // 将<br>标签转换为换行符
+              .replace(/<\/p>/gi, '\n\n')     // 将</p>标签转换为双换行符
+              .replace(/<p[^>]*>/gi, '')      // 移除<p>开始标签
+              .replace(/<div[^>]*>/gi, '\n')  // 将<div>标签转换为换行符
+              .replace(/<\/div>/gi, '')       // 移除</div>标签
+              .replace(/<[^>]*>/g, '')        // 移除其他HTML标签
+              .replace(/&nbsp;/g, ' ')        // 将&nbsp;转换为空格
+              .replace(/&lt;/g, '<')          // 解码HTML实体
+              .replace(/&gt;/g, '>')
+              .replace(/&amp;/g, '&')
+              .replace(/\n\s*\n\s*\n/g, '\n\n') // 将多个连续换行符合并为双换行符
+              .trim();
+            
+            if (content) {
+              console.log('提取到的内容:', content);
+              return content;
+            }
+          }
+          
+          // 如果innerHTML处理失败，回退到textContent
+          const textContent = contentElement.textContent?.trim();
+          if (textContent) {
+            console.log('提取到的内容(textContent):', textContent);
+            return textContent;
           }
         }
       }
@@ -625,7 +2032,8 @@ export default defineContentScript({
           const match = cleanTimeText.match(format);
           if (match) {
             let year = now.getFullYear();
-            let month, day;
+            let month = 0;
+            let day = 1;
 
             if (match.length === 4) { // YYYY-MM-DD
               year = parseInt(match[1]);
@@ -667,35 +2075,7 @@ export default defineContentScript({
     }
 
     // 更新数据显示
-    function updateDataDisplay(noteData: NoteData): void {
-      // 更新赞粉比显示
-      const likeFollowRatioElement = document.getElementById('like-follow-ratio');
-      if (likeFollowRatioElement) {
-        likeFollowRatioElement.innerHTML = `赞粉比: <strong>${noteData.likeFollowRatio.toFixed(2)}%</strong>`;
-      }
-    
-      // 更新粉丝量显示
-      const followerCountElement = document.getElementById('follower-count');
-      if (followerCountElement) {
-        followerCountElement.innerHTML = `粉丝: <strong>${formatNumber(noteData.followerCount)}</strong>`;
-      }
-    
-      // 更新笔记评分显示
-      const noteScoreElement = document.getElementById('note-score');
-      if (noteScoreElement) {
-        noteScoreElement.innerHTML = `评分: <strong>${noteData.noteScore}/100</strong>`;
-      }
-    }
-    
-    // 格式化数字显示
-    function formatNumber(num: number): string {
-      if (num >= 10000) {
-        return (num / 10000).toFixed(1) + 'w';
-      } else if (num >= 1000) {
-        return (num / 1000).toFixed(1) + 'k';
-      }
-      return num.toString();
-    }
+
     
     // 处理推荐程度变化
     function handleRecommendChange(event: Event): void {
@@ -777,7 +2157,7 @@ export default defineContentScript({
         }
       } catch (error) {
         console.error('同步笔记时出错:', error);
-        if (error.message && error.message.includes('Extension context invalidated')) {
+        if (error instanceof Error && error.message && error.message.includes('Extension context invalidated')) {
           showMessage('扩展上下文已失效，请刷新页面重试', 'error');
         } else {
           showMessage('同步失败，请检查网络连接', 'error');
@@ -1003,7 +2383,7 @@ export default defineContentScript({
       for (const selector of titleSelectors) {
         console.log(`🔍 [DEBUG] 尝试标题选择器: ${selector}`);
         const element = document.querySelector(selector);
-        if (element && element.offsetHeight > 0 && element.offsetWidth > 0) {
+        if (element && (element as HTMLElement).offsetHeight > 0 && (element as HTMLElement).offsetWidth > 0) {
           titleElement = element;
           console.log(`✅ 找到标题元素: ${selector}`, element);
           break;
@@ -1044,7 +2424,7 @@ export default defineContentScript({
           // 初始化数据显示
           const noteData = extractNoteData();
           if (noteData) {
-            updateDataDisplay(noteData);
+            updateDataDisplay();
           }
           
           // 模拟鼠标移动
@@ -1071,7 +2451,7 @@ export default defineContentScript({
         
         for (const selector of contentSelectors) {
           const element = document.querySelector(selector);
-          if (element && element.offsetHeight > 0) {
+          if (element && (element as HTMLElement).offsetHeight > 0) {
             const functionButtons = createFunctionButtons();
             const randomClass = antiDetection.generateRandomClass();
             functionButtons.className = `xhs-helper-buttons ${randomClass}`;
@@ -1104,7 +2484,7 @@ export default defineContentScript({
             setTimeout(() => {
               const noteData = extractNoteData();
               if (noteData) {
-                updateDataDisplay(noteData);
+                updateDataDisplay();
               }
               antiDetection.simulateMouseMovement(functionButtons);
             }, antiDetection.randomDelay(300, 700));
@@ -1535,8 +2915,8 @@ export default defineContentScript({
             tagName: el.tagName,
             className: el.className,
             id: el.id,
-            offsetHeight: el.offsetHeight,
-            offsetWidth: el.offsetWidth
+            offsetHeight: (el as HTMLElement).offsetHeight,
+            offsetWidth: (el as HTMLElement).offsetWidth
           })));
           
           // 查找可能的容器元素
@@ -1545,8 +2925,8 @@ export default defineContentScript({
             tagName: el.tagName,
             className: el.className,
             id: el.id,
-            offsetHeight: el.offsetHeight,
-            offsetWidth: el.offsetWidth,
+            offsetHeight: (el as HTMLElement).offsetHeight,
+            offsetWidth: (el as HTMLElement).offsetWidth,
             textContent: el.textContent?.substring(0, 50) + '...'
           })));
         
@@ -1573,7 +2953,7 @@ export default defineContentScript({
       }
 
       // 专门处理悬浮弹窗中的按钮添加
-      async function smartAddButtonsToModal(modalElement) {
+      async function smartAddButtonsToModal(modalElement: Element) {
         console.log('🔍 [DEBUG] smartAddButtonsToModal 开始执行', modalElement);
         
         try {
@@ -1631,10 +3011,15 @@ export default defineContentScript({
           }
 
           // 创建功能按钮容器
-          const buttonContainer = createButtonContainer();
+          const buttonContainer = createFunctionButtons();
           
           // 尝试插入到第一个合适的位置
           const targetElement = insertTargets[0];
+          
+          if (!targetElement) {
+            console.warn('未找到合适的插入位置');
+            return false;
+          }
           
           // 根据目标元素的类型选择插入方式
           if (targetElement.classList.contains('note-actions') || 
@@ -1644,7 +3029,9 @@ export default defineContentScript({
             targetElement.appendChild(buttonContainer);
           } else {
             // 否则插入到目标元素之后
-            targetElement.parentNode.insertBefore(buttonContainer, targetElement.nextSibling);
+            if (targetElement.parentNode) {
+              targetElement.parentNode.insertBefore(buttonContainer, targetElement.nextSibling);
+            }
           }
 
           console.log('✅ 成功在悬浮弹窗中添加功能按钮');

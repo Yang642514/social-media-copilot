@@ -5,7 +5,8 @@
       "Bash(gh repo create:*)",
       "Bash(git remote set-url:*)",
       "Bash(gh repo view:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nfeat: 完善飞书多维表格集成功能\n\n- 增强飞书API错误处理和错误码映射\n- 添加多维表格元数据验证和获取功能\n- 实现智能字段检查和自动创建机制\n- 优化数据同步逻辑和字段类型判断\n- 添加表格更新和连接测试功能\n- 完善README文档和功能说明\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
     ],
     "deny": [],
     "ask": []

@@ -23,20 +23,15 @@ interface FeishuConfig {
     shares: boolean;
     publishTime: boolean;
     updateTime: boolean;
-    ipAddress: boolean;
     
     // 博主信息
-    authorId: boolean;
     authorUrl: boolean;
     authorName: boolean;
-    authorXhsId: boolean;
     followerCount: boolean;
     likesAndCollections: boolean;
     authorBio: boolean;
     
     // 其他
-    imageCount: boolean;
-    noteImages: boolean;
     videoCover: boolean;
     videoFile: boolean;
   };
@@ -74,17 +69,14 @@ const FIELD_CATEGORIES = {
       shares: '分享量',
       publishTime: '发布时间',
       updateTime: '更新时间',
-      ipAddress: 'IP地址',
     }
   },
   authorInfo: {
     label: '博主信息',
     icon: '👤',
     fields: {
-      authorId: '博主ID',
       authorUrl: '博主链接',
       authorName: '博主昵称',
-      authorXhsId: '小红书号',
       followerCount: '粉丝数',
       likesAndCollections: '获赞与收藏',
       authorBio: '博主简介',
@@ -94,8 +86,6 @@ const FIELD_CATEGORIES = {
     label: '其他',
     icon: '📎',
     fields: {
-      imageCount: '图片数量',
-      noteImages: '笔记图片',
       videoCover: '视频封面',
       videoFile: '视频文件',
     }
@@ -123,20 +113,15 @@ function App() {
       shares: true,
       publishTime: true,
       updateTime: false,
-      ipAddress: false,
       
       // 博主信息 - 默认选中基础字段
-      authorId: true,
       authorUrl: false,
       authorName: true,
-      authorXhsId: false,
       followerCount: true,
       likesAndCollections: false,
-      authorBio: false,
+      authorBio: false,       // 博主简介内容较长且更新频率低
       
       // 其他 - 默认不选中
-      imageCount: false,
-      noteImages: false,
       videoCover: false,
       videoFile: false,
     }
