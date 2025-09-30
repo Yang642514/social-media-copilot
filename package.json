@@ -1,9 +1,8 @@
 {
-  "name": "social-media-copilot",
+  "name": "xiaohongshu-helper",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "author": "Andy Zhou <andy_zh@foxmail.com>",
   "engines": {
     "node": ">=18.0.0"
   },
@@ -18,24 +17,17 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
-    "@hookform/resolvers": "^3.9.0",
     "@radix-ui/react-scroll-area": "^1.2.8",
     "@radix-ui/react-slot": "^1.2.2",
-    "axios": "^1.7.3",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
-    "moment": "^2.30.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "socket.io-client": "^4.8.1",
     "tailwind-merge": "^2.4.0",
-    "tailwindcss-animate": "^1.0.7",
-    "tldts": "^7.0.7"
+    "tailwindcss-animate": "^1.0.7"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.320",
-    "@types/dom-navigation": "^1.0.3",
-    "@types/lodash": "^4.17.7",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@wxt-dev/module-react": "^1.0.0",
